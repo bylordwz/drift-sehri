@@ -1087,8 +1087,12 @@
       for (const p of list) if (p.kind === 'hydrant' && !p.broken) { ctx.moveTo(p.x + 0.24, p.y); ctx.arc(p.x, p.y, 0.24, 0, U.TAU); }
       ctx.fillStyle = '#b8231f'; ctx.fill();
       ctx.beginPath();
-      for (const p of list) if (p.kind === 'hydrant') { const r = p.broken ? 0.14 : 0.12, o = p.broken ? 0 : 0.05; ctx.moveTo(p.x - o + r, p.y - o); ctx.arc(p.x - o, p.y - o, r, 0, U.TAU); }
+      for (const p of list) if (p.kind === 'hydrant' && !p.broken) { ctx.moveTo(p.x - 0.05 + 0.12, p.y - 0.05); ctx.arc(p.x - 0.05, p.y - 0.05, 0.12, 0, U.TAU); }
       ctx.fillStyle = '#e35a4a'; ctx.fill();
+      // kırık musluk: koyu kesik boru
+      ctx.beginPath();
+      for (const p of list) if (p.kind === 'hydrant' && p.broken) { ctx.moveTo(p.x + 0.14, p.y); ctx.arc(p.x, p.y, 0.14, 0, U.TAU); }
+      ctx.fillStyle = '#5a1d1d'; ctx.fill();
       ctx.beginPath();
       for (const p of list) if (p.kind === 'bin' && !p.broken) ctx.rect(p.x - 0.3, p.y - 0.3, 0.6, 0.6);
       ctx.fillStyle = '#2f4a3a'; ctx.fill();
@@ -1307,7 +1311,8 @@
       BY[0] = s.y0; BY[1] = s.y0; BY[2] = s.y1; BY[3] = s.y1;
       for (let i = 0; i < 4; i++) { RX[i] = cx + (BX[i] - cx) * k; RY[i] = cy + (BY[i] - cy) * k; }
       const night = env.windows;
-      const rec = this._wantLight && s.h >= 1.5;
+      // alçak bariyerler dahil her katı cisim ışığı keser (eski davranış)
+      const rec = this._wantLight;
       let hdr = 0;
       if (rec) { this._laReserve(2 + 8 * 5); hdr = this.laN; this.la[hdr] = 0; this.la[hdr + 1] = 0; this.laN += 2; }
       let visMask = 0;
@@ -1334,8 +1339,10 @@
             const W = s.wq[e], i = e, j = (e + 1) & 3;
             const mx = (BX[i] + BX[j]) / 2 - cx, my = (BY[i] + BY[j]) / 2 - cy;
             const floorPx = W.fk * Math.hypot(mx, my) * z;
-            if (floorPx < 2) continue;
-            const arr = winMode === 3 || (winMode === 2 && floorPx >= 6) ? W.grid : W.band;
+            // yalnızca alt kademelerde, alt piksel boyuna inmiş cepheleri atla
+            if (winMode < 3 && floorPx < 1) continue;
+            // binanın kendi pencere tipi korunur; ızgara yalnızca uzakta / düşük kademede banda iner
+            const arr = s.win === 'band' || winMode === 1 || (winMode === 2 && floorPx < 6) ? W.band : W.grid;
             this._emitQuads(ctx, arr, BX[i] - cx, BY[i] - cy, BX[j] - BX[i], BY[j] - BY[i], cx, cy, null);
             glassOpen = true;
           }
@@ -1349,7 +1356,7 @@
             const W = s.wq[e], i = e, j = (e + 1) & 3;
             if (!W.lit.length) continue;
             const mx = (BX[i] + BX[j]) / 2 - cx, my = (BY[i] + BY[j]) / 2 - cy;
-            if (W.fk * Math.hypot(mx, my) * z < 3) continue;
+            if (Q.windows < 3 && W.fk * Math.hypot(mx, my) * z < (Q.windows ? 1.5 : 3)) continue;
             litN += this._emitQuads(ctx, W.lit, BX[i] - cx, BY[i] - cy, BX[j] - BX[i], BY[j] - BY[i], cx, cy, rec ? this : null);
           }
           if (litN) { ctx.fillStyle = '#ffd88f'; ctx.fill(); }

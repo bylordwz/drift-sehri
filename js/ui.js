@@ -9,6 +9,14 @@
   const setC = (el, c, on) => { const k = '_c' + c; if (el[k] !== on) { el[k] = on; el.classList.toggle(c, on); } };
   const setS = (el, prop, v) => { const k = '_s' + prop; if (el[k] !== v) { el[k] = v; el.style[prop] = v; } };
   const setH = (el, v) => { if (el._h !== v) { el._h = v; el.hidden = v; } };
+  // hz sıklıkla tetiklenen zamanlayıcı; kare süresindeki küçük titreşim yüzünden kare atlamaz,
+  // fazlası bir sonraki aralığa taşınır (60 Hz hedefte her kare, 30 Hz'de iki karede bir)
+  const due = (o, k, dt, hz) => {
+    const iv = 1 / hz, t = (o[k] || 0) + dt;
+    if (t < iv - 0.002) { o[k] = t; return false; }
+    o[k] = Math.max(0, Math.min(t - iv, iv));
+    return true;
+  };
 
   const UI = (DS.UI = {
     Q: null,
@@ -19,6 +27,12 @@
     },
     init(game) {
       this.g = game;
+      // gösterge yüzü önbelleği web yazı tipi yüklenmeden çizilmiş olabilir: yüklenince yenile
+      if (document.fonts) {
+        const inval = () => { this._gface = null; this._gkey = null; this._gfkey = null; };
+        if (document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', inval);
+        if (document.fonts.ready) document.fonts.ready.then(inval).catch(() => {});
+      }
       this.el = {
         hud: $('#hud'), drift: $('#drift'), chain: $('#d-chain'), mult: $('#d-mult'), flag: $('#d-flag'),
         angFill: $('#d-angle-fill'), angNum: $('#d-angle-num'), msgs: $('#msgs'),
@@ -297,9 +311,8 @@
       if (this.current === 'garage') this.drawPreview();
       if (g.state !== 'play' && g.state !== 'pause') return;
       const sc = g.score, el = this.el;
-      this.tText = (this.tText || 0) + dt; this.tGauge = (this.tGauge || 0) + dt; this.tMini = (this.tMini || 0) + dt;
-      const textTick = this.tText >= 1 / Q.textHz;
-      if (textTick) this.tText = 0;
+      const textTick = due(this, 'tText', dt, Q.textHz);
+      const gaugeTick = due(this, 'tGauge', dt, Q.gaugeHz), miniTick = due(this, 'tMini', dt, Q.miniHz);
       // drift kutusu
       if (sc.active) {
         this.dispChain = U.lerp(this.dispChain, sc.chain, 1 - Math.exp(-14 * dt));
@@ -377,8 +390,8 @@
           }
         } else setH(el.count, true);
       } else { setH(el.thud, true); setH(el.count, true); }
-      if (this.tGauge >= 1 / Q.gaugeHz) { this.tGauge = 0; this.drawGauge(); }
-      if (this.tMini >= 1 / Q.miniHz) { this.tMini = 0; this.drawMini(); }
+      if (gaugeTick) this.drawGauge();
+      if (miniTick) this.drawMini();
       if (g.save.settings.fps) {
         setH(el.fps, false);
         this.tFps = (this.tFps || 0) + dt;

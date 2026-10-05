@@ -82,9 +82,12 @@
       };
       const d = U.store.get(SAVE_KEY, null);
       if (!d || d.v !== 1) return base;
-      d.settings = Object.assign({}, base.settings, d.settings || {});
+      // sürüm kontrolü varsayılanlarla birleştirmeden ÖNCE yapılmalı (varsayılanlar qv:2 içerir)
+      const raw = d.settings || {};
+      const migrate = raw.qv !== 2;
+      d.settings = Object.assign({}, base.settings, raw);
       // eski kayıtlar (Düşük/Orta/Yüksek, masaüstünde varsayılan Yüksek) kasmanın sebebiydi: Otomatik'e geçir
-      if (d.settings.qv !== 2) { d.settings.quality = 'auto'; d.settings.qv = 2; d.settings.dynres = true; delete d.settings.autoLevel; }
+      if (migrate) { d.settings.quality = 'auto'; d.settings.qv = 2; d.settings.dynres = true; delete d.settings.autoLevel; }
       d.owned = Array.isArray(d.owned) && d.owned.length ? d.owned : ['hachi'];
       d.cars = d.cars || {};
       if (!DS.CARS.some((c) => c.id === d.car)) d.car = 'hachi';
@@ -132,7 +135,7 @@
       this.env = e;
       this.tuneEnv();
       // kalite modu değiştiyse kademeyi yeniden kur
-      const qkey = s.quality + '|' + s.dynres;
+      const qkey = s.quality + '|' + s.dynres + '|' + s.fpsCap;
       if (this._qReady && this._qkey !== qkey) this.setupQuality(false);
       this._frozenDone = false;
       this.persistSoon();
@@ -153,7 +156,7 @@
     setupQuality(boot) {
       const s = this.save.settings, L = DS.Quality.LADDER;
       this._qReady = true;
-      this._qkey = s.quality + '|' + s.dynres;
+      this._qkey = s.quality + '|' + s.dynres + '|' + s.fpsCap;
       let min = 0, max = L.length - 1, start;
       if (s.quality === 'auto') {
         const g = DS.Quality.guessLevel(s.autoLevel);
@@ -171,6 +174,9 @@
       }
       this.lock30 = false;
       this.autoQ.lock30 = false;
+      // otomatik 30 kilidi yalnızca Otomatik modda ve FPS sınırı 'Sınırsız' iken
+      this.autoQ.allowLock = s.quality === 'auto' && !Number(s.fpsCap);
+      this.autoQ.capMs = Number(s.fpsCap) ? 1000 / Number(s.fpsCap) : 0;
       this.autoQ.setRange(min, max);
       this.autoQ.level = U.clamp(start, min, max);
       this.autoQ.reset(1.2);
@@ -221,6 +227,8 @@
       const lw = Math.max(1, Math.ceil(cw * Q.lightScale)), lh = Math.max(1, Math.ceil(ch * Q.lightScale));
       if (this.lc.width !== lw || this.lc.height !== lh) { this.lc.width = lw; this.lc.height = lh; }
       this.fx.resizeLayers(cw, ch, lw, lh);
+      // donmuş karede kamera güncellenmez: yakınlığı yeni ölçeğe hemen uyarla
+      if (this.cam && this.cam.zoomCss) this.cam.zoom = this.cam.zoomCss * this.dpr;
       this._frozenDone = false;
       if (this.autoQ) this.autoQ.reset(0.8);
       if (DS.UI.sizeCanvases) DS.UI.sizeCanvases();
@@ -317,7 +325,12 @@
       const s = this.save.settings;
       // FPS sınırı (ayar ya da otomatik 30 kilidi): erken gelen kareyi atla
       const cap = Number(s.fpsCap) || (this.lock30 ? 30 : 0);
-      if (cap && this.lastFrameTs && ts - this.lastFrameTs < 1000 / cap - 2) return;
+      if (cap) {
+        // hedef zamana göre adımla: artan süre korunur, 75/144 Hz ekranlarda da ortalama tam 'cap' olur
+        const iv = 1000 / cap;
+        if (this._capT && ts < this._capT + iv - 2) return;
+        this._capT = this._capT && ts - this._capT < 2 * iv ? this._capT + iv : ts;
+      } else this._capT = 0;
       const t0 = performance.now();
       const delta = this.lastFrameTs ? ts - this.lastFrameTs : 16.7;
       this.lastFrameTs = ts;
@@ -333,7 +346,7 @@
           else if (this.state === 'menu') this.updateAttract(dt);
           if (this.state === 'play' || this.state === 'menu') {
             this.fx.update(dt);
-            this.fx.updateRain(dt, this.canvas.width, this.canvas.height, this.env.rain);
+            this.fx.updateRain(dt, this.canvas.width, this.canvas.height, this.env.rain, this.dpr);
             if (this.view) this.fx.rainSplashes(this.view, dt);
           }
           this.drawFrame(dt);
@@ -361,11 +374,15 @@
         o._x = o.x; o._y = o.y; o._h = o.h;
         o.x = U.lerp(o.px, o.x, a); o.y = U.lerp(o.py, o.y, a); o.h = U.alerp(o.ph, o.h, a);
       }
-      if (dt > 0) this.updateCamera(dt);
-      this.render();
-      for (const o of objs) {
-        if (o._x === undefined) continue;
-        o.x = o._x; o.y = o._y; o.h = o._h; o._x = undefined;
+      try {
+        if (dt > 0) this.updateCamera(dt);
+        this.render();
+      } finally {
+        // çizim hata verse bile gerçek fizik konumu geri yüklensin
+        for (const o of objs) {
+          if (o._x === undefined) continue;
+          o.x = o._x; o.y = o._y; o.h = o._h; o._x = undefined;
+        }
       }
     },
 
@@ -626,20 +643,20 @@
       this.city.drawSolids(ctx, v, cp, env, env.light, M, W, H);
 
       if (env.light) {
-        const l = this.lctx, lw = this.lc.width, lh = this.lc.height, ls = lw / W;
+        const l = this.lctx, lw = this.lc.width, lh = this.lc.height, ls = lw / W, lsy = lh / H;
         l.setTransform(1, 0, 0, 1, 0, 0);
         l.globalCompositeOperation = 'source-over';
         l.globalAlpha = 1;
         // düşük kademede yağmur tonu ayrı tam ekran dolgu yerine ortam ışığına katılır
         l.fillStyle = env.rain && Q.tier < 2 ? this.rainAmb(env) : env.ambient;
         l.fillRect(0, 0, lw, lh);
-        l.setTransform(M[0] * ls, M[1] * ls, M[2] * ls, M[3] * ls, M[4] * ls, M[5] * ls);
+        l.setTransform(M[0] * ls, M[1] * lsy, M[2] * ls, M[3] * lsy, M[4] * ls, M[5] * lsy);
         l.globalCompositeOperation = 'lighter';
         if (env.lamps) this.city.drawLightSources(l, env, tall, M, W, H);
         for (const c of cars) DS.CarRender.drawLights(l, c, env);
         this.fx.drawFlashes(l);
         l.globalCompositeOperation = 'source-over';
-        this.fx.drawSmokeLight(l, v, M, ls);
+        this.fx.drawSmokeLight(l, v, M, W, H);
         this.city.drawSolidsLight(l, env);
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.globalCompositeOperation = 'multiply';

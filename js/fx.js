@@ -139,7 +139,22 @@
       this.res = 8; this.size = 64; this.map = new Map(); this.max = 56; this.clock = 0; this.free = [];
     }
     configure(res, max) {
-      if (res !== this.res) { this.clear(); this.free.length = 0; this.res = res; }
+      if (res !== this.res) {
+        // kalite değişince izler silinmesin: parçaları yeni çözünürlüğe yeniden örnekle
+        const k = res / this.res, px = this.size * res;
+        for (const ch of this.map.values()) {
+          const c = U.canvas(px, px), g = c.getContext('2d');
+          g.lineCap = 'round';
+          if (ch.x1 > ch.x0 && ch.y1 > ch.y0) {
+            const w = ch.x1 - ch.x0, h = ch.y1 - ch.y0;
+            g.drawImage(ch.c, ch.x0, ch.y0, w, h, ch.x0 * k, ch.y0 * k, w * k, h * k);
+            ch.x0 = Math.max(0, Math.floor(ch.x0 * k)); ch.y0 = Math.max(0, Math.floor(ch.y0 * k));
+            ch.x1 = Math.min(px, Math.ceil(ch.x1 * k)); ch.y1 = Math.min(px, Math.ceil(ch.y1 * k));
+          }
+          ch.c.width = 0; ch.c = c; ch.g = g;
+        }
+        this.free.length = 0; this.res = res;
+      }
       this.max = max;
       while (this.map.size > this.max) this.evict(null);
     }
@@ -480,13 +495,14 @@
 
     // Gece: duman ortam ışığını saçar. Bulutlar küçük bir katmanda biriktirilir, ışık haritasına
     // tek bir 'lighten' (en büyük değer) işlemiyle eklenir: beyaza doymaz, lamba altını karartmaz
-    drawSmokeLight(lctx, v, M, ls) {
+    drawSmokeLight(lctx, v, M, W, H) {
       if (!this.S.light || !this.visSmoke || !this.sl) return;
-      const g = this.slg, s = this.sl.width / lctx.canvas.width * ls;
+      // M ana tuval pikseline göre; katmana eksen başına ayrı ölçekle iner (yuvarlanmış boyutlar kaymasın)
+      const g = this.slg, sx = this.sl.width / W, sy = this.sl.height / H;
       const img = Sprites.smokeAtlas('#8f96ad');
       g.setTransform(1, 0, 0, 1, 0, 0);
       g.clearRect(0, 0, this.sl.width, this.sl.height);
-      g.setTransform(M[0] * s, M[1] * s, M[2] * s, M[3] * s, M[4] * s, M[5] * s);
+      g.setTransform(M[0] * sx, M[1] * sy, M[2] * sx, M[3] * sy, M[4] * sx, M[5] * sy);
       const pool = this.pool, cut = this.cut;
       for (let i = 0; i < this.ns; i++) {
         const p = pool[i];
@@ -548,19 +564,21 @@
     }
 
     // ---- yağmur (ekran koordinatı) ----
-    updateRain(dt, W, H, on) {
+    // W, H tuval pikseli; hız ve uzunluklar CSS pikseli cinsinden, dpr ile ölçeklenir
+    updateRain(dt, W, H, on, dpr) {
       this.rainOn = on;
       if (!on) { this.rain.length = 0; return; }
+      const k = dpr || 1, m = 30 * k;
       while (this.rain.length < this.rainWant) this.rain.push({ x: Math.random() * W, y: Math.random() * H, l: 18 + Math.random() * 26, s: 900 + Math.random() * 600 });
       for (const d of this.rain) {
-        d.y += d.s * dt; d.x -= d.s * 0.18 * dt;
-        if (d.y > H + 30 || d.x < -30) { d.y = -30 - Math.random() * 60; d.x = Math.random() * (W + 100); }
+        d.y += d.s * k * dt; d.x -= d.s * 0.18 * k * dt;
+        if (d.y > H + m || d.x < -m) { d.y = -m - Math.random() * 2 * m; d.x = Math.random() * (W + 3 * m); }
       }
     }
     drawRain(ctx, dpr) {
       if (!this.rainOn || !this.rain.length) return;
       ctx.strokeStyle = 'rgba(190,210,235,0.32)';
-      ctx.lineWidth = Math.max(1, 1.1 * dpr);
+      ctx.lineWidth = Math.max(0.6, 1.1 * dpr);
       ctx.beginPath();
       for (const d of this.rain) { ctx.moveTo(d.x, d.y); ctx.lineTo(d.x + d.l * 0.18 * dpr, d.y - d.l * dpr); }
       ctx.stroke();

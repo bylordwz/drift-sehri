@@ -91,7 +91,8 @@
       this.reset(1);
       this.lastUpT = -99; this.lastUpLevel = -1; this.t = 0; this.stableT = 0;
       this.slowFloor = 0; this.lock30 = false;
-      this.lockT = 0; this.lockWait = 20; this.unlockAt = -99;
+      this.lockT = 0; this.lockWait = 20; this.unlockAt = -99; this.failedProbes = 0; this.upSinceUnlock = true;
+      this.allowLock = true; this.capMs = 0;
     }
     setRange(min, max) { this.min = min; this.max = max; this.level = U.clamp(this.level, min, max); }
     reset(cool) {
@@ -108,17 +109,19 @@
     sample(delta, work, dt) {
       this.t += dt;
       this.stableT += dt;
-      // 30 kilidi kalıcı değil: belli aralıklarla kaldırıp yeniden dene (sahne hafiflemiş olabilir)
+      if (this.stableT > 60) { for (let k = 0; k < this.upWait.length; k++) this.upWait[k] = Math.max(4, this.upWait[k] * 0.5); this.stableT = 0; }
+      // kilit çözüldükten sonra 30 s sorunsuz geçtiyse başarısız deneme sayacını sıfırla
+      if (!this.lock30 && this.failedProbes && this.t - this.unlockAt > 30) this.failedProbes = 0;
+      // 30 kilidi kalıcı değil: belli aralıklarla aynı seviyede kaldırıp yeniden dene
       if (this.lock30) {
         this.lockT += dt;
         if (this.lockT >= this.lockWait) {
-          this.lock30 = false; this.lockT = 0; this.unlockAt = this.t;
+          this.lock30 = false; this.lockT = 0; this.unlockAt = this.t; this.upSinceUnlock = false;
           this.reset(0.6);
           this.onChange(this.level, 'unlock30');
           return;
         }
       }
-      if (this.stableT > 60) { for (let k = 0; k < this.upWait.length; k++) this.upWait[k] = Math.max(4, this.upWait[k] * 0.5); this.stableT = 0; }
       if (this.cool > 0) { this.cool -= dt; return; }
       if (!(delta > 0) || delta > 250) return;
       this.d[this.i] = delta; this.w[this.i] = work;
@@ -128,14 +131,17 @@
       const span = this.evalT;
       this.evalT = 0;
       const m = Math.min(this.n, 60);
-      const p20 = this.pct(this.d, m, 0.2), p50 = this.pct(this.d, m, 0.5), p90 = this.pct(this.d, m, 0.9);
+      const p50 = this.pct(this.d, m, 0.5), p90 = this.pct(this.d, m, 0.9);
       const wp90 = this.pct(this.w, m, 0.9);
-      let vs = 16.67;
-      for (const c of [6.94, 8.33, 11.1, 13.3, 16.67, 33.3]) if (Math.abs(c - p20) < Math.abs(vs - p20)) vs = c;
-      const T = Math.max(vs, 16.67);
-      let miss = 0;
-      for (let k = 0; k < m; k++) if (this.d[(this.i - 1 - k + 240) % 120] > 1.5 * T) miss++;
+      // Hedef kare süresi o anki (aşırı yüklü olabilecek) kare aralığından tahmin edilmez:
+      // kilitsizken 60 FPS (daha yükseği kovalanmaz), kilitliyken 30 FPS, kullanıcı sınırı varsa o
+      const T = this.lock30 ? 33.33 : Math.max(16.67, this.capMs || 0);
+      let miss = 0, sum = 0;
+      for (let k = 0; k < m; k++) { const x = this.d[(this.i - 1 - k + 240) % 120]; sum += x; if (x > 1.5 * T) miss++; }
       miss /= m;
+      // sınırlı modda yüksek tazelemeli ekran kare aralığını titretir (ör. 144 Hz'de 60: 13.9/20.8 ms):
+      // orada ortalama tutuyorsa iyi say
+      const steady = p90 <= 1.1 * T || ((this.capMs || this.lock30) && sum / m <= 1.03 * T && p90 <= 1.3 * T);
       const L = this.level;
       // kötü
       if (p50 > 2.0 * T && L > this.min) return this.change(L - 2, 'down');
@@ -151,21 +157,24 @@
           }
           return this.change(L - 1, 'down');
         }
-        if (L === this.min && this.bad >= 4 && !this.lock30) {
-          // kilit kalktıktan kısa süre sonra yeniden gerekiyorsa bir sonraki deneme daha geç
-          this.lockWait = this.t - this.unlockAt < 12 ? Math.min(160, this.lockWait * 2) : 20;
+        // en alt seviyede hâlâ 30-55 FPS arasında sallanıyorsa sabit 30 daha akıcıdır
+        // (30'un altındaysa kilit işe yaramaz: hiç kilitleme, bildirim de gösterme)
+        if (this.allowLock && !this.lock30 && L === this.min && this.bad >= 4 && p50 > 1.1 * T && p50 < 2.1 * T) {
+          if (this.unlockAt > -99 && !this.upSinceUnlock) this.failedProbes = (this.failedProbes || 0) + 1;
+          this.lockWait = Math.min(160, 20 * Math.pow(2, this.failedProbes || 0));
           this.lock30 = true; this.lockT = 0;
+          this.reset(0.6);
           this.onChange(L, 'lock30');
         }
         this.goodT = 0;
         return;
       }
       this.bad = 0;
-      // iyi
-      if (p90 <= 1.1 * T && miss < 0.03 && wp90 < 0.5 * T) {
+      // iyi — kilitliyken yükseltme yok (kilit kalkınca 60 FPS hedefi zaten bu seviyede başarısızdı)
+      if (!this.lock30 && steady && miss < 0.03 && wp90 < 0.5 * T) {
         this.goodT += span;
         const next = L + 1;
-        if (next <= this.max && this.goodT >= this.upWait[next]) return this.change(next, 'up');
+        if (next <= this.max && this.goodT >= this.upWait[next]) { this.upSinceUnlock = true; return this.change(next, 'up'); }
       } else this.goodT = 0;
     }
     change(nl, dir) {
