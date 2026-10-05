@@ -88,7 +88,10 @@
     },
   };
 
-  U.fmt = (n) => Math.round(n).toLocaleString('tr-TR');
+  // Intl biçimlendiricisini bir kez kur (toLocaleString her çağrıda yeniden kurar)
+  let NF = null;
+  try { NF = new Intl.NumberFormat('tr-TR', { maximumFractionDigits: 0 }); } catch (e) { NF = null; }
+  U.fmt = (n) => (NF ? NF.format(Math.round(n)) : String(Math.round(n)));
   U.isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
   // Nokta ile eksen hizalı kutu arası mesafe

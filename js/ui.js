@@ -4,7 +4,19 @@
   const DS = window.DS, U = DS.U;
   const $ = (s) => document.querySelector(s);
 
+  // DOM'a yalnızca değer değiştiğinde yaz (her karede yazmak stil/yerleşim hesabını tetikler)
+  const setT = (el, v) => { if (el._t !== v) { el._t = v; el.textContent = v; } };
+  const setC = (el, c, on) => { const k = '_c' + c; if (el[k] !== on) { el[k] = on; el.classList.toggle(c, on); } };
+  const setS = (el, prop, v) => { const k = '_s' + prop; if (el[k] !== v) { el[k] = v; el.style[prop] = v; } };
+  const setH = (el, v) => { if (el._h !== v) { el._h = v; el.hidden = v; } };
+
   const UI = (DS.UI = {
+    Q: null,
+    setQuality(Q) {
+      this.Q = Q;
+      this.sizeCanvases();
+      this._gface = null;
+    },
     init(game) {
       this.g = game;
       this.el = {
@@ -36,7 +48,7 @@
     },
 
     sizeCanvases() {
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const dpr = Math.min(window.devicePixelRatio || 1, this.Q ? this.Q.hudDpr : 2);
       for (const c of [this.el.gauge, this.el.mini]) {
         // gizliyken bile CSS boyutunu oku (getBoundingClientRect gizli öğede 0 döner)
         const cs = getComputedStyle(c);
@@ -44,6 +56,7 @@
         if (c._w === w && c._h === h && c._dpr === dpr) continue;
         c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
         c._dpr = dpr; c._w = w; c._h = h;
+        this._gkey = null; this._gfkey = null;
       }
       const pv = $('#g-preview');
       if (pv) { const r = pv.getBoundingClientRect(); if (r.width) { pv.width = Math.round(r.width * dpr); pv.height = Math.round(r.height * dpr); } }
@@ -110,7 +123,8 @@
       };
       on('#s-steer', 'steer'); on('#s-sens', 'sens', Number); on('#s-assist', 'assist', Number);
       on('#s-trans', 'trans'); on('#s-cam', 'cam'); on('#s-zoom', 'zoom', Number);
-      on('#s-time', 'time'); on('#s-weather', 'weather'); on('#s-quality', 'quality', Number);
+      on('#s-time', 'time'); on('#s-weather', 'weather'); on('#s-quality', 'quality', (v) => (v === 'auto' ? 'auto' : Number(v)));
+      on('#s-dynres', 'dynres'); on('#s-fpscap', 'fpsCap', Number);
       on('#s-sound', 'sound'); on('#s-vol', 'vol', Number); on('#s-fps', 'fps');
     },
     loadSettings() {
@@ -118,6 +132,7 @@
       $('#s-steer').value = s.steer; $('#s-sens').value = s.sens; $('#s-assist').value = s.assist;
       $('#s-trans').value = s.trans; $('#s-cam').value = s.cam; $('#s-zoom').value = s.zoom;
       $('#s-time').value = s.time; $('#s-weather').value = s.weather; $('#s-quality').value = String(s.quality);
+      $('#s-dynres').checked = !!s.dynres; $('#s-fpscap').value = String(s.fpsCap || 0);
       $('#s-sound').checked = s.sound; $('#s-vol').value = s.vol; $('#s-fps').checked = s.fps;
     },
 
@@ -278,120 +293,150 @@
 
     // ---------------- KARE GÜNCELLEMESİ ----------------
     frame(dt) {
-      const g = this.g;
+      const g = this.g, Q = this.Q || DS.Quality.TIERS[2];
       if (this.current === 'garage') this.drawPreview();
       if (g.state !== 'play' && g.state !== 'pause') return;
-      const sc = g.score;
+      const sc = g.score, el = this.el;
+      this.tText = (this.tText || 0) + dt; this.tGauge = (this.tGauge || 0) + dt; this.tMini = (this.tMini || 0) + dt;
+      const textTick = this.tText >= 1 / Q.textHz;
+      if (textTick) this.tText = 0;
       // drift kutusu
       if (sc.active) {
         this.dispChain = U.lerp(this.dispChain, sc.chain, 1 - Math.exp(-14 * dt));
-        this.el.chain.textContent = U.fmt(this.dispChain);
-        this.el.mult.textContent = 'x' + String(+sc.mult.toFixed(2)).replace('.', ',');
-        this.el.flag.textContent = sc.prox ? 'YAKIN' : '';
-        this.el.drift.classList.add('on');
-        this.el.drift.classList.toggle('hot', sc.prox);
-        this.el.drift.classList.remove('banked', 'lost');
+        if (textTick) {
+          setT(el.chain, U.fmt(this.dispChain));
+          setT(el.mult, 'x' + String(+sc.mult.toFixed(2)).replace('.', ','));
+          setT(el.flag, sc.prox ? 'YAKIN' : '');
+        }
+        setC(el.drift, 'on', true);
+        setC(el.drift, 'hot', sc.prox);
+        setC(el.drift, 'banked', false);
+        setC(el.drift, 'lost', false);
         this.bankT = 0;
       } else if (this.bankT > 0) {
         this.bankT -= dt;
-        if (this.bankT <= 0) this.el.drift.classList.remove('on', 'banked', 'lost', 'hot');
+        if (this.bankT <= 0) { setC(el.drift, 'on', false); setC(el.drift, 'banked', false); setC(el.drift, 'lost', false); setC(el.drift, 'hot', false); }
       } else {
-        this.el.drift.classList.remove('on', 'hot');
+        setC(el.drift, 'on', false); setC(el.drift, 'hot', false);
         this.dispChain = 0;
       }
-      const ang = U.clamp(sc.angle, 0, 90);
-      this.el.angFill.style.transform = `scaleX(${ang / 90})`;
-      this.el.angNum.textContent = Math.round(ang) + '°';
-      this.el.angFill.classList.toggle('sweet', ang > 30 && ang < 65);
-      // mesajlar
+      const ang = Math.round(U.clamp(sc.angle, 0, 90));
+      setS(el.angFill, 'transform', `scaleX(${(ang / 90).toFixed(3)})`);
+      setT(el.angNum, ang + '°');
+      setC(el.angFill, 'sweet', ang > 30 && ang < 65);
+      // mesajlar (anında)
       const pump = (arr) => {
         while (arr.length) {
           const m = arr.shift();
           if (m.kind === 'bank') {
-            this.el.chain.textContent = m.sub.replace('+', '');
-            this.el.drift.classList.add('on', 'banked');
-            this.el.flag.textContent = m.text;
+            setT(el.chain, m.sub.replace('+', ''));
+            setC(el.drift, 'on', true); setC(el.drift, 'banked', true);
+            setT(el.flag, m.text);
             this.bankT = 1.4;
             continue;
           }
           const d = document.createElement('div');
           d.className = 'msg ' + m.kind;
           d.innerHTML = `<b>${m.text}</b>${m.sub ? `<span>${m.sub}</span>` : ''}`;
-          this.el.msgs.appendChild(d);
-          while (this.el.msgs.children.length > 3) this.el.msgs.firstChild.remove();
+          el.msgs.appendChild(d);
+          while (el.msgs.children.length > 3) el.msgs.firstChild.remove();
           setTimeout(() => d.remove(), 1500);
           if (m.kind === 'bad' && sc.chain === 0) {
-            this.el.drift.classList.add('on', 'lost');
-            this.el.flag.textContent = m.text;
-            this.el.chain.textContent = m.sub || '0';
+            setC(el.drift, 'on', true); setC(el.drift, 'lost', true);
+            setT(el.flag, m.text);
+            setT(el.chain, m.sub || '0');
             this.bankT = 1.1;
           }
         }
       };
       pump(sc.msgs);
       if (g.judge) pump(g.judge.msgs);
-      this.el.total.textContent = U.fmt(sc.total);
-      this.el.money.textContent = '₺' + U.fmt(g.save.money);
+      if (textTick) {
+        setT(el.total, U.fmt(sc.total));
+        setT(el.money, '₺' + U.fmt(g.save.money));
+      }
       // tandem
       if (g.mode === 'tandem' && g.judge) {
         const j = g.judge;
-        this.el.thud.hidden = false;
-        this.el.tprog.style.transform = `scaleX(${j.progress})`;
-        this.el.tgap.textContent = Math.max(0, j.gap).toFixed(1) + ' m';
-        this.el.tmark.style.left = (U.clamp(j.gap / 30, 0, 1) * 100).toFixed(1) + '%';
-        this.el.tmark.classList.toggle('good', j.gap > 1.5 && j.gap <= 9);
-        this.el.tscore.textContent = j.live;
+        setH(el.thud, false);
+        setS(el.tprog, 'transform', `scaleX(${j.progress.toFixed(3)})`);
+        if (textTick) {
+          setT(el.tgap, Math.max(0, j.gap).toFixed(1) + ' m');
+          setT(el.tscore, String(j.live));
+        }
+        setS(el.tmark, 'transform', `translateX(${(U.clamp(j.gap / 30, 0, 1) * 100).toFixed(1)}%)`);
+        setC(el.tmark, 'good', j.gap > 1.5 && j.gap <= 9);
         if (j.state === 'count') {
-          this.el.count.hidden = false;
+          setH(el.count, false);
           const n = Math.ceil(j.t - 0.4);
           const txt = n > 0 ? String(n) : 'BAŞLA';
-          if (this.el.count.textContent !== txt) {
-            this.el.count.textContent = txt;
-            this.el.count.classList.remove('pop'); void this.el.count.offsetWidth; this.el.count.classList.add('pop');
+          if (el.count.textContent !== txt) {
+            el.count.textContent = txt;
+            el.count.classList.remove('pop'); void el.count.offsetWidth; el.count.classList.add('pop');
             g.audio.beep(n > 0 ? 520 : 880, 0.12, 0.08);
           }
-        } else this.el.count.hidden = true;
-      } else { this.el.thud.hidden = true; this.el.count.hidden = true; }
-      this.drawGauge();
-      this.drawMini();
+        } else setH(el.count, true);
+      } else { setH(el.thud, true); setH(el.count, true); }
+      if (this.tGauge >= 1 / Q.gaugeHz) { this.tGauge = 0; this.drawGauge(); }
+      if (this.tMini >= 1 / Q.miniHz) { this.tMini = 0; this.drawMini(); }
       if (g.save.settings.fps) {
-        this.el.fps.hidden = false;
-        this.el.fps.textContent = Math.round(g.fpsAvg) + ' FPS';
-      } else this.el.fps.hidden = true;
+        setH(el.fps, false);
+        this.tFps = (this.tFps || 0) + dt;
+        if (this.tFps > 0.5) {
+          this.tFps = 0;
+          const lv = g.Q ? `${g.Q.name} · %${Math.round(g.dpr * 100)}` : '';
+          setT(el.fps, `${Math.round(g.fpsAvg)} FPS · ${lv}${g.lock30 ? ' · 30 kilit' : ''}`);
+        }
+      } else setH(el.fps, true);
     },
 
+    // Devir saati: sabit kadran önbellekte, yalnızca ibre/hız/vites değişince yeniden çizilir
     drawGauge() {
       const c = this.el.gauge, g = this.gaugeCtx, car = this.g.car;
       const dpr = c._dpr || 1, w = c._w || 176, h = c._h || 112;
-      g.setTransform(dpr, 0, 0, dpr, 0, 0);
-      g.clearRect(0, 0, w, h);
       const cx = w / 2, cy = h * 0.66, R = Math.min(w * 0.42, h * 0.6);
       const a0 = Math.PI * 0.82, a1 = Math.PI * 2.18;
       const red = car.p.redline, maxR = Math.ceil(red / 1000 + 0.5) * 1000;
       const ang = (r) => a0 + (a1 - a0) * (r / maxR);
-      g.lineCap = 'round';
-      g.lineWidth = 7; g.strokeStyle = 'rgba(10,13,20,0.7)';
-      g.beginPath(); g.arc(cx, cy, R, a0, a1); g.stroke();
-      g.lineWidth = 4; g.strokeStyle = 'rgba(255,59,48,0.85)';
-      g.beginPath(); g.arc(cx, cy, R, ang(red * 0.92), ang(maxR)); g.stroke();
-      const rn = car.rpm;
-      g.lineWidth = 4; g.strokeStyle = rn > red * 0.92 ? '#ff3b30' : '#ffb23e';
-      g.beginPath(); g.arc(cx, cy, R, a0, ang(Math.min(rn, maxR))); g.stroke();
-      g.fillStyle = 'rgba(242,237,227,0.7)';
-      g.font = '600 9px "Chakra Petch", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-      for (let k = 0; k <= maxR / 1000; k++) {
-        const a = ang(k * 1000);
-        g.fillText(String(k), cx + Math.cos(a) * (R - 12), cy + Math.sin(a) * (R - 12));
+      const rn = Math.min(car.rpm, maxR), kmh = Math.round(car.speed * 3.6);
+      const key = (rn >> 6) + '|' + kmh + '|' + car.gear + '|' + ((car.boost * 20) | 0);
+      const fkey = red + '|' + w + '|' + h + '|' + dpr;
+      if (key === this._gkey && fkey === this._gfkey) return;
+      this._gkey = key;
+      if (!this._gface || this._gfkey !== fkey) {
+        this._gfkey = fkey;
+        const f = this._gface || (this._gface = U.canvas(1, 1));
+        f.width = c.width; f.height = c.height;
+        const fg = f.getContext('2d');
+        fg.setTransform(dpr, 0, 0, dpr, 0, 0);
+        fg.lineCap = 'round';
+        fg.lineWidth = 7; fg.strokeStyle = 'rgba(10,13,20,0.7)';
+        fg.beginPath(); fg.arc(cx, cy, R, a0, a1); fg.stroke();
+        fg.lineWidth = 4; fg.strokeStyle = 'rgba(255,59,48,0.85)';
+        fg.beginPath(); fg.arc(cx, cy, R, ang(red * 0.92), ang(maxR)); fg.stroke();
+        fg.fillStyle = 'rgba(242,237,227,0.7)';
+        fg.font = '600 9px "Chakra Petch", sans-serif'; fg.textAlign = 'center'; fg.textBaseline = 'middle';
+        for (let k = 0; k <= maxR / 1000; k++) {
+          const a = ang(k * 1000);
+          fg.fillText(String(k), cx + Math.cos(a) * (R - 12), cy + Math.sin(a) * (R - 12));
+        }
+        fg.font = '600 9px "Chakra Petch", sans-serif'; fg.fillStyle = 'rgba(242,237,227,0.6)';
+        fg.fillText('km/h', cx, cy + 14);
       }
-      const na = ang(Math.min(rn, maxR));
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.clearRect(0, 0, c.width, c.height);
+      g.drawImage(this._gface, 0, 0);
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.lineCap = 'round';
+      g.lineWidth = 4; g.strokeStyle = rn > red * 0.92 ? '#ff3b30' : '#ffb23e';
+      g.beginPath(); g.arc(cx, cy, R, a0, ang(rn)); g.stroke();
+      const na = ang(rn);
       g.strokeStyle = '#f2ede3'; g.lineWidth = 2;
       g.beginPath(); g.moveTo(cx + Math.cos(na) * 8, cy + Math.sin(na) * 8); g.lineTo(cx + Math.cos(na) * (R + 3), cy + Math.sin(na) * (R + 3)); g.stroke();
-      const kmh = Math.round(car.speed * 3.6);
+      g.textAlign = 'center'; g.textBaseline = 'middle';
       g.fillStyle = '#f2ede3';
       g.font = '400 26px Bungee, Impact, sans-serif';
       g.fillText(String(kmh), cx, cy - 4);
-      g.font = '600 9px "Chakra Petch", sans-serif'; g.fillStyle = 'rgba(242,237,227,0.6)';
-      g.fillText('km/h', cx, cy + 14);
       const gear = car.gear === -1 ? 'R' : String(car.gear);
       g.fillStyle = car.gear === -1 ? '#ff3b30' : '#ffb23e';
       g.font = '400 16px Bungee, Impact, sans-serif';

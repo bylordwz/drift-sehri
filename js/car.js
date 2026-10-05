@@ -54,6 +54,7 @@
 
     reset(x, y, h) {
       this.x = x; this.y = y; this.h = h;
+      this.px = x; this.py = y; this.ph = h;
       this.vx = 0; this.vy = 0; this.w = 0;
       this.steer = 0; this.rpm = this.p.idle; this.gear = 1;
       this.boost = 0; this.spinEx = 0; this.axf = 0; this.ayf = 0;
@@ -525,7 +526,12 @@
     },
 
     drawCar(ctx, car) {
-      const def = car.def, spr = this.sprite(def, car.setup);
+      const def = car.def, st = car.setup;
+      // sprite'ı araçta önbelleğe al; kurulum değişince anahtar değişir
+      if (!car._spr || car._sprDef !== def || car._sprC !== st.color || car._sprL !== st.livery || car._sprW !== st.wing) {
+        car._spr = this.sprite(def, st); car._sprDef = def; car._sprC = st.color; car._sprL = st.livery; car._sprW = st.wing;
+      }
+      const spr = car._spr;
       const tw = def.wid * 0.43;
       ctx.save();
       ctx.translate(car.x, car.y);
@@ -559,8 +565,10 @@
       ctx.translate(car.x + ox, car.y + oy);
       ctx.rotate(car.h);
       const a = env.sun ? env.shadowA : 0.42;
-      for (const [grow, k] of [[0.35, 0.45], [0, 0.75]]) {
-        ctx.fillStyle = `rgba(8,10,20,${a * k})`;
+      if (env._shA !== a) { env._shA = a; env._sh = [`rgba(8,10,20,${a * 0.45})`, `rgba(8,10,20,${a * 0.75})`]; }
+      for (let q = 0; q < 2; q++) {
+        const grow = q === 0 ? 0.35 : 0;
+        ctx.fillStyle = env._sh[q];
         ctx.beginPath();
         if (ctx.roundRect) ctx.roundRect(-L / 2 - grow, -W / 2 - grow, L + grow * 2, W + grow * 2, 0.45 + grow);
         else ctx.rect(-L / 2 - grow, -W / 2 - grow, L + grow * 2, W + grow * 2);
@@ -574,16 +582,27 @@
       return { def, setup: { color: PARK_COLORS[vi % PARK_COLORS.length], livery: 'none', wing: false, rim: '#b8b8b8' } };
     },
 
-    drawParked(ctx, p) {
-      const { def, setup } = this.parkSetup(p.v);
-      const spr = this.sprite(def, setup);
-      ctx.save();
-      ctx.translate(p.x, p.y);
-      ctx.rotate(p.ang);
-      ctx.fillStyle = 'rgba(8,10,20,0.35)';
-      ctx.fillRect(-def.len / 2 + 0.1, -def.wid / 2 + 0.05, def.len, def.wid);
+    // Park hâlindeki araç: gölge sprite'a gömülü, matris doğrudan kurulur (save/restore yok)
+    parkedSprite(vi) {
+      const pc = this._parked || (this._parked = []);
+      if (pc[vi]) return pc[vi];
+      const { def, setup } = this.parkSetup(vi);
+      const spr = this.build(def, setup);
+      const c = U.canvas(spr.c.width, spr.c.height), g = c.getContext('2d');
+      g.scale(PX, PX);
+      g.fillStyle = 'rgba(8,10,20,0.35)';
+      g.fillRect(spr.w / 2 - def.len / 2 + 0.1, spr.h / 2 - def.wid / 2 + 0.05, def.len, def.wid);
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.drawImage(spr.c, 0, 0);
+      return (pc[vi] = { c, w: spr.w, h: spr.h });
+    },
+    prewarmParked() { for (let i = 0; i < 8; i++) this.parkedSprite(i); },
+    drawParked(ctx, p, M) {
+      const spr = p.spr || (p.spr = this.parkedSprite(p.v));
+      if (p.co === undefined) { p.co = Math.cos(p.ang); p.si = Math.sin(p.ang); }
+      const a = M[0], b = M[1], c = M[2], d = M[3], co = p.co, si = p.si;
+      ctx.setTransform(a * co + c * si, b * co + d * si, c * co - a * si, d * co - b * si, a * p.x + c * p.y + M[4], b * p.x + d * p.y + M[5]);
       ctx.drawImage(spr.c, -spr.w / 2, -spr.h / 2, spr.w, spr.h);
-      ctx.restore();
     },
 
     // Gece ışık haritası: farlar, stoplar, alt neon

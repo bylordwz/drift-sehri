@@ -158,8 +158,11 @@
     </div>
     <div class="set-group">
       <h3>Görüntü ve ses</h3>
-      <label class="row"><span>Grafik</span>
-        <select id="s-quality"><option value="0">Düşük</option><option value="1">Orta</option><option value="2">Yüksek</option></select></label>
+      <label class="row"><span>Grafik <small>Otomatik, bilgisayarına göre ayarlar</small></span>
+        <select id="s-quality"><option value="auto">Otomatik (önerilen)</option><option value="0">Çok düşük</option><option value="1">Düşük</option><option value="2">Orta</option><option value="3">Yüksek</option></select></label>
+      <label class="row"><span>Dinamik çözünürlük <small>takılınca görüntüyü hafifçe düşürür</small></span><input id="s-dynres" type="checkbox"></label>
+      <label class="row"><span>FPS sınırı</span>
+        <select id="s-fpscap"><option value="0">Sınırsız</option><option value="60">60</option><option value="30">30 (zayıf bilgisayar)</option></select></label>
       <label class="row"><span>Ses</span><input id="s-sound" type="checkbox"></label>
       <label class="row"><span>Ses düzeyi</span><input id="s-vol" type="range" min="0" max="1" step="0.05"></label>
       <label class="row"><span>FPS göster</span><input id="s-fps" type="checkbox"></label>
@@ -205,6 +208,7 @@
 
 <script src="js/util.js"></script>
 <script src="js/data.js"></script>
+<script src="js/quality.js"></script>
 <script src="js/collide.js"></script>
 <script src="js/city.js"></script>
 <script src="js/car.js"></script>

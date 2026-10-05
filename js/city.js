@@ -15,6 +15,12 @@
   const NEON = ['#ff3a6e', '#38d9ff', '#ffb23e', '#7cff6b', '#c86bff'];
   const SOLID_KINDS = { bld: 1, barrier: 1, rail: 1, cont: 1, ware: 1, stand: 1, car: 1 };
   const SOLID_CIRCS = { tires: 1, island: 1, tree: 1, fountain: 1, pole: 1 };
+  // en düşük kademede desen yerine düz renkler
+  const FLAT = { asphalt: '#2d3139', lot: '#363a41', dpark: '#2e3238', sidewalk: '#9c978d', concrete: '#8b8880', grass: '#3c6a2d', gravel: '#a49b86' };
+  // duvar dış normalleri: kuzey, doğu, güney, batı
+  const WN = [0, -1, 1, 0, 0, 1, -1, 0];
+  const RIPPLE = [];
+  for (let i = 0; i < 10; i++) RIPPLE.push(`rgba(200,235,255,${(0.5 * (1 - i / 10)).toFixed(3)})`);
 
   function fillPat(ctx, pat, x, y, w, h) {
     ctx.save();
@@ -56,6 +62,7 @@
       this.fountains = [];
       this.cgrid = new Map(); this.dgrid = new Map(); this.qid = 1; this.dq = 1;
       this.roundabouts = [[3, 3], [6, 6]];
+      this.Q = DS.Quality.TIERS[2];
       this.nid = 1;
 
       this._layout();
@@ -567,8 +574,9 @@
       }
     }
 
-    visible(v, key) {
-      const q = ++this.dq, out = [];
+    visible(v, key, out) {
+      const q = ++this.dq;
+      if (out) out.length = 0; else out = [];
       const ax = Math.floor(v.x0 / DCELL), bx = Math.floor(v.x1 / DCELL);
       const ay = Math.floor(v.y0 / DCELL), by = Math.floor(v.y1 / DCELL);
       for (let i = ax; i <= bx; i++) {
@@ -811,45 +819,116 @@
         specks(g, S, 1200, 'rgba(230,225,210,0.4)', 1);
       });
       this.P = P;
+      // Desen ölçeğini bir kez ayarla: dünya koordinatında doğrudan doldurulabilsin (save/scale/restore yok)
+      this.patT = false;
+      try {
+        if (P.asphalt && typeof P.asphalt.setTransform === 'function') {
+          const m = typeof DOMMatrix !== 'undefined' ? new DOMMatrix([1 / PS, 0, 0, 1 / PS, 0, 0]) : { a: 1 / PS, b: 0, c: 0, d: 1 / PS, e: 0, f: 0 };
+          for (const k in P) P[k].setTransform(m);
+          this.patT = true;
+        }
+      } catch (e) { this.patT = false; }
+    }
+
+    // Kalite kademesi (DS.Quality.TIERS öğesi)
+    setQuality(Q) {
+      this.Q = Q;
+    }
+
+    // Malzemeyi doldur: desen (dönüşümü bir kez ayarlı) ya da düz renk; desen dönüşümü desteklenmiyorsa eski yavaş yol
+    _fillMat(ctx, mat, rule) {
+      if (this.Q.flatGround || !this.patT) {
+        if (!this.Q.flatGround && this._rects) return this._fillLegacy(ctx, mat);
+        ctx.fillStyle = FLAT[mat];
+      } else ctx.fillStyle = this.P[mat];
+      ctx.fill(rule || 'nonzero');
+    }
+    _fillLegacy(ctx, mat) {
+      // yalnızca CanvasPattern.setTransform olmayan eski tarayıcılar için
+      const r = this._rects;
+      for (let i = 0; i < r.length; i += 4) fillPat(ctx, this.P[mat], r[i], r[i + 1], r[i + 2], r[i + 3]);
     }
 
     drawGround(ctx, v, t) {
-      const P = this.P;
-      fillPat(ctx, P.grass, v.x0, v.y0, v.x1 - v.x0, v.y1 - v.y0);
+      const Q = this.Q;
+      const legacy = !this.patT && !Q.flatGround;
+      const rects = legacy ? (this._rects = []) : null;
+      const R = (x, y, w, h) => { ctx.rect(x, y, w, h); if (rects) rects.push(x, y, w, h); };
+      const begin = () => { ctx.beginPath(); if (rects) rects.length = 0; };
+      // şehir dışında kalan görünür alan: çim (şehir dikdörtgeni delik)
+      const inside = v.x0 >= this.x0 && v.y0 >= this.y0 && v.x1 <= this.x1 && v.y1 <= this.y1;
+      if (!inside) {
+        begin();
+        ctx.rect(v.x0, v.y0, v.x1 - v.x0, v.y1 - v.y0);
+        const cx0 = Math.max(this.x0, v.x0), cy0 = Math.max(this.y0, v.y0), cx1 = Math.min(this.x1, v.x1), cy1 = Math.min(this.y1, v.y1);
+        if (cx1 > cx0 && cy1 > cy0) ctx.rect(cx0, cy0, cx1 - cx0, cy1 - cy0);
+        if (rects) { ctx.fillStyle = FLAT.grass; ctx.fill('evenodd'); } else this._fillMat(ctx, 'grass', 'evenodd');
+      }
+      // yollar: tek yol, birleşim (kavşaklar bir kez boyanır)
+      begin();
       for (let i = 0; i <= NB; i++) {
         const x = this.lx[i], w = this.wx[i];
         if (x + w / 2 < v.x0 || x - w / 2 > v.x1) continue;
         const y0 = Math.max(this.y0, v.y0), y1 = Math.min(this.y1, v.y1);
-        if (y1 > y0) fillPat(ctx, P.asphalt, x - w / 2, y0, w, y1 - y0);
+        if (y1 > y0) R(x - w / 2, y0, w, y1 - y0);
       }
       for (let j = 0; j <= NB; j++) {
         const y = this.ly[j], w = this.wy[j];
         if (y + w / 2 < v.y0 || y - w / 2 > v.y1) continue;
         const x0 = Math.max(this.x0, v.x0), x1 = Math.min(this.x1, v.x1);
-        if (x1 > x0) fillPat(ctx, P.asphalt, x0, y - w / 2, x1 - x0, w);
+        if (x1 > x0) R(x0, y - w / 2, x1 - x0, w);
       }
-      const vis = [];
+      this._fillMat(ctx, 'asphalt');
+      const vis = this._visBlocks || (this._visBlocks = []);
+      vis.length = 0;
       for (const b of this.blocks) {
         if (b.x1 < v.x0 || b.x0 > v.x1 || b.y1 < v.y0 || b.y0 > v.y1) continue;
         vis.push(b);
       }
-      for (const b of vis) {
-        fillPat(ctx, P.sidewalk, b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
-        const I = b.inner;
-        if (b.type === 'park') {
-          fillPat(ctx, P.grass, I.x0, I.y0, I.x1 - I.x0, I.y1 - I.y0);
-          for (const p of b.paths) fillPat(ctx, P.gravel, p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
-          ctx.save();
-          ctx.beginPath(); ctx.arc(b.plaza.x, b.plaza.y, b.plaza.r, 0, U.TAU); ctx.clip();
-          fillPat(ctx, P.sidewalk, b.plaza.x - b.plaza.r, b.plaza.y - b.plaza.r, b.plaza.r * 2, b.plaza.r * 2);
-          ctx.restore();
-        } else if (b.type === 'parking') fillPat(ctx, P.lot, I.x0, I.y0, I.x1 - I.x0, I.y1 - I.y0);
-        else if (b.type === 'drift') fillPat(ctx, P.dpark, I.x0, I.y0, I.x1 - I.x0, I.y1 - I.y0);
-        else {
-          fillPat(ctx, P.concrete, I.x0, I.y0, I.x1 - I.x0, I.y1 - I.y0);
-          for (const c of b.courts) fillPat(ctx, P.lot, c.x0, c.y0, c.x1 - c.x0, c.y1 - c.y0);
+      // kaldırım halkaları (iç kısım boyanmaz)
+      if (rects) {
+        for (const b of vis) {
+          const I = b.inner;
+          fillPat(ctx, this.P.sidewalk, b.x0, b.y0, b.x1 - b.x0, SW);
+          fillPat(ctx, this.P.sidewalk, b.x0, b.y1 - SW, b.x1 - b.x0, SW);
+          fillPat(ctx, this.P.sidewalk, b.x0, I.y0, SW, I.y1 - I.y0);
+          fillPat(ctx, this.P.sidewalk, I.x1, I.y0, SW, I.y1 - I.y0);
         }
+      } else {
+        ctx.beginPath();
+        for (const b of vis) { const I = b.inner; ctx.rect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0); ctx.rect(I.x0, I.y0, I.x1 - I.x0, I.y1 - I.y0); }
+        this._fillMat(ctx, 'sidewalk', 'evenodd');
       }
+      // iç alanlar, malzeme başına tek dolgu
+      const mats = [['concrete', 'ind'], ['lot', 'parking'], ['grass', 'park'], ['dpark', 'drift']];
+      for (const [mat, type] of mats) {
+        begin();
+        let any = false;
+        for (const b of vis) if (b.type === type) { const I = b.inner; R(I.x0, I.y0, I.x1 - I.x0, I.y1 - I.y0); any = true; }
+        if (mat === 'lot') for (const b of vis) for (const c of b.courts) { R(c.x0, c.y0, c.x1 - c.x0, c.y1 - c.y0); any = true; }
+        if (any) this._fillMat(ctx, mat);
+      }
+      // bina blokları: iç zemin neredeyse tamamen binaların altında, düz renk yeter
+      ctx.beginPath();
+      let anyB = false;
+      for (const b of vis) {
+        if (b.type !== 'build') continue;
+        const I = b.inner;
+        // avlular ayrı boyandı; bina altı + bina arası şeritler
+        ctx.rect(I.x0, I.y0, I.x1 - I.x0, I.y1 - I.y0); anyB = true;
+        for (const c of b.courts) ctx.rect(c.x1, c.y0, c.x0 - c.x1, c.y1 - c.y0);
+      }
+      if (anyB) { ctx.fillStyle = '#7f7c75'; ctx.fill(); }
+      // park yolları ve meydan
+      begin();
+      let anyP = false;
+      for (const b of vis) if (b.type === 'park') for (const p of b.paths) { R(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0); anyP = true; }
+      if (anyP) this._fillMat(ctx, 'gravel');
+      ctx.beginPath();
+      let anyPl = false;
+      for (const b of vis) if (b.plaza) { ctx.moveTo(b.plaza.x + b.plaza.r, b.plaza.y); ctx.arc(b.plaza.x, b.plaza.y, b.plaza.r, 0, U.TAU); anyPl = true; }
+      if (anyPl) { if (rects) { ctx.fillStyle = FLAT.sidewalk; ctx.fill(); } else this._fillMat(ctx, 'sidewalk'); }
+
       // kaldırım taşı (bordür) ve gölgesi
       ctx.beginPath();
       for (const b of vis) ctx.rect(b.x0 + 0.16, b.y0 + 0.16, b.x1 - b.x0 - 0.32, b.y1 - b.y0 - 0.32);
@@ -865,7 +944,7 @@
       for (const b of vis) if (b.type === 'drift') this._drawDriftPaint(ctx, b);
 
       // yol çizgileri
-      const marks = this.visible(v, 'm');
+      const marks = this.visible(v, 'm', this._vm || (this._vm = []));
       ctx.beginPath();
       for (const m of marks) if (m.col === 'w') ctx.rect(m.x0, m.y0, m.x1 - m.x0, m.y1 - m.y0);
       ctx.fillStyle = 'rgba(232,231,222,0.86)'; ctx.fill();
@@ -873,29 +952,32 @@
       for (const m of marks) if (m.col === 'y') ctx.rect(m.x0, m.y0, m.x1 - m.x0, m.y1 - m.y0);
       ctx.fillStyle = 'rgba(240,186,40,0.9)'; ctx.fill();
 
-      // lekeler
-      const dec = this.visible(v, 'd');
-      for (const d of dec) {
-        if (d.kind === 'manhole') {
-          ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, U.TAU);
-          ctx.fillStyle = '#25282d'; ctx.fill();
-          ctx.lineWidth = 0.07; ctx.strokeStyle = '#3e434b'; ctx.stroke();
+      // lekeler: türe göre toplu çizim
+      if (Q.decals > 0) {
+        const dec = this.visible(v, 'd', this._vd || (this._vd = []));
+        ctx.beginPath();
+        for (const d of dec) if (d.kind === 'manhole') { ctx.moveTo(d.x + d.r, d.y); ctx.arc(d.x, d.y, d.r, 0, U.TAU); }
+        ctx.fillStyle = '#25282d'; ctx.fill();
+        ctx.lineWidth = 0.07; ctx.strokeStyle = '#3e434b'; ctx.stroke();
+        ctx.beginPath();
+        for (const d of dec) if (d.kind === 'patch') ctx.rect(d.x - d.w / 2, d.y - d.h / 2, d.w, d.h);
+        ctx.fillStyle = 'rgba(0,0,0,0.13)'; ctx.fill();
+        ctx.lineWidth = 0.06; ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.stroke();
+        if (Q.decals > 1) {
           ctx.beginPath();
-          ctx.moveTo(d.x - d.r * 0.6, d.y); ctx.lineTo(d.x + d.r * 0.6, d.y);
-          ctx.moveTo(d.x, d.y - d.r * 0.6); ctx.lineTo(d.x, d.y + d.r * 0.6);
-          ctx.lineWidth = 0.04; ctx.stroke();
-        } else if (d.kind === 'crack') {
-          ctx.beginPath(); ctx.moveTo(d.pts[0], d.pts[1]);
-          for (let i = 2; i < d.pts.length; i += 2) ctx.lineTo(d.pts[i], d.pts[i + 1]);
+          for (const d of dec) {
+            if (d.kind !== 'crack') continue;
+            ctx.moveTo(d.pts[0], d.pts[1]);
+            for (let i = 2; i < d.pts.length; i += 2) ctx.lineTo(d.pts[i], d.pts[i + 1]);
+          }
           ctx.lineWidth = 0.06; ctx.strokeStyle = 'rgba(12,12,16,0.55)'; ctx.stroke();
-        } else if (d.kind === 'oil') {
-          ctx.beginPath(); ctx.ellipse(d.x, d.y, d.r, d.r * d.e, d.ang, 0, U.TAU);
+          ctx.beginPath();
+          for (const d of dec) {
+            if (d.kind !== 'oil') continue;
+            ctx.moveTo(d.x + Math.cos(d.ang) * d.r, d.y + Math.sin(d.ang) * d.r);
+            ctx.ellipse(d.x, d.y, d.r, d.r * d.e, d.ang, 0, U.TAU);
+          }
           ctx.fillStyle = 'rgba(8,8,12,0.22)'; ctx.fill();
-        } else {
-          ctx.fillStyle = 'rgba(0,0,0,0.13)';
-          ctx.fillRect(d.x - d.w / 2, d.y - d.h / 2, d.w, d.h);
-          ctx.lineWidth = 0.06; ctx.strokeStyle = 'rgba(0,0,0,0.25)';
-          ctx.strokeRect(d.x - d.w / 2, d.y - d.h / 2, d.w, d.h);
         }
       }
       // göbek adaları
@@ -905,11 +987,7 @@
         ctx.setLineDash([1.6, 1.6]); ctx.lineWidth = 0.14; ctx.strokeStyle = 'rgba(232,231,222,0.7)'; ctx.stroke();
         ctx.setLineDash([]);
         ctx.beginPath(); ctx.arc(is.x, is.y, is.r, 0, U.TAU);
-        ctx.fillStyle = '#c9c4b8'; ctx.fill();
-        ctx.save(); ctx.clip();
-        fillPat(ctx, this.P.grass, is.x - is.r, is.y - is.r, is.r * 2, is.r * 2);
-        ctx.restore();
-        ctx.beginPath(); ctx.arc(is.x, is.y, is.r - 0.2, 0, U.TAU);
+        if (legacy) { ctx.fillStyle = FLAT.grass; ctx.fill(); } else this._fillMat(ctx, 'grass');
         ctx.lineWidth = 0.4; ctx.strokeStyle = '#d7d2c6'; ctx.stroke();
       }
       // fıskiyeler
@@ -919,10 +997,11 @@
         ctx.fillStyle = '#b8b2a5'; ctx.fill();
         ctx.beginPath(); ctx.arc(f.x, f.y, f.r - 0.45, 0, U.TAU);
         ctx.fillStyle = '#2f6f8f'; ctx.fill();
+        ctx.lineWidth = 0.08;
         for (let k = 0; k < 3; k++) {
           const ph = (t * 0.6 + k / 3) % 1;
           ctx.beginPath(); ctx.arc(f.x, f.y, 0.4 + ph * (f.r - 0.9), 0, U.TAU);
-          ctx.lineWidth = 0.08; ctx.strokeStyle = `rgba(200,235,255,${0.5 * (1 - ph)})`; ctx.stroke();
+          ctx.strokeStyle = RIPPLE[Math.min(9, (ph * 10) | 0)]; ctx.stroke();
         }
         ctx.beginPath(); ctx.arc(f.x, f.y, 0.5, 0, U.TAU);
         ctx.fillStyle = 'rgba(230,248,255,0.9)'; ctx.fill();
@@ -937,24 +1016,24 @@
           ctx.setLineDash([]);
         } else if (p.t === 'start') {
           const sq = 1;
-          for (let k = 0; k < p.w / sq; k++) {
-            for (let r = 0; r < 2; r++) {
-              ctx.fillStyle = (k + r) % 2 ? 'rgba(240,240,235,0.85)' : 'rgba(20,20,22,0.85)';
-              ctx.fillRect(p.x - p.w / 2 + k * sq, p.y + r * sq, sq, sq);
-            }
-          }
+          ctx.beginPath();
+          for (let k = 0; k < p.w / sq; k++) for (let r = 0; r < 2; r++) if ((k + r) % 2) ctx.rect(p.x - p.w / 2 + k * sq, p.y + r * sq, sq, sq);
+          ctx.fillStyle = 'rgba(240,240,235,0.85)'; ctx.fill();
+          ctx.beginPath();
+          for (let k = 0; k < p.w / sq; k++) for (let r = 0; r < 2; r++) if (!((k + r) % 2)) ctx.rect(p.x - p.w / 2 + k * sq, p.y + r * sq, sq, sq);
+          ctx.fillStyle = 'rgba(20,20,22,0.85)'; ctx.fill();
         } else if (p.t === 'text') {
-          ctx.save();
           ctx.font = '700 9px Bungee, Impact, sans-serif';
           ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
           ctx.fillStyle = 'rgba(255,178,62,0.22)';
           ctx.fillText(p.s, p.x, p.y);
-          ctx.restore();
         }
       }
     }
 
     drawShadows(ctx, v, env) {
+      const Q = this.Q;
+      if (!Q.shadows) return;
       const sx = env.sun.x, sy = env.sun.y;
       const ext = 60 * Math.max(sx, sy);
       ctx.beginPath();
@@ -969,8 +1048,9 @@
       }
       ctx.fillStyle = `rgba(12,16,34,${env.shadowA})`;
       ctx.fill();
-      // ağaç gölgeleri: daha yumuşak, gövdeden uzanan
-      const tall = this.visible({ x0: v.x0 - ext, y0: v.y0 - ext, x1: v.x1, y1: v.y1 }, 't');
+      if (Q.shadows < 2) return;
+      // ağaç ve direk gölgeleri
+      const tall = this.visible({ x0: v.x0 - ext, y0: v.y0 - ext, x1: v.x1, y1: v.y1 }, 't', this._vs || (this._vs = []));
       const len = Math.min(4.5, 5 / Math.max(0.01, Math.hypot(sx, sy)));
       ctx.beginPath();
       for (const p of tall) {
@@ -981,7 +1061,6 @@
       }
       ctx.fillStyle = `rgba(12,16,34,${env.shadowA * 0.6})`;
       ctx.fill();
-      // direk gölgeleri
       ctx.beginPath();
       for (const p of tall) {
         if (p.kind === 'lamp' && !p.broken) { ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + sx * 7.5, p.y + sy * 7.5); }
@@ -990,63 +1069,77 @@
       ctx.lineWidth = 0.22; ctx.strokeStyle = `rgba(12,16,34,${env.shadowA * 0.8})`; ctx.stroke();
     }
 
-    drawLowProps(ctx, v, t) {
-      const list = this.visible(v, 'l');
+    // Sabit dekor sprite'ları (lastik adası, klip noktası) bir kez çizilir
+    _sprite(key, sizeM, draw) {
+      const S = this._spr || (this._spr = {});
+      if (S[key]) return S[key];
+      const ppm = 24, px = Math.ceil(sizeM * ppm);
+      const c = U.canvas(px, px), g = c.getContext('2d');
+      g.scale(ppm, ppm); g.translate(sizeM / 2, sizeM / 2);
+      draw(g);
+      return (S[key] = c);
+    }
+
+    drawLowProps(ctx, v, t, M) {
+      const list = this.visible(v, 'l', this._vl || (this._vl = []));
+      // yangın muslukları, çöp kutuları, banklar, çalılar: türe göre toplu
+      ctx.beginPath();
+      for (const p of list) if (p.kind === 'hydrant' && !p.broken) { ctx.moveTo(p.x + 0.24, p.y); ctx.arc(p.x, p.y, 0.24, 0, U.TAU); }
+      ctx.fillStyle = '#b8231f'; ctx.fill();
+      ctx.beginPath();
+      for (const p of list) if (p.kind === 'hydrant') { const r = p.broken ? 0.14 : 0.12, o = p.broken ? 0 : 0.05; ctx.moveTo(p.x - o + r, p.y - o); ctx.arc(p.x - o, p.y - o, r, 0, U.TAU); }
+      ctx.fillStyle = '#e35a4a'; ctx.fill();
+      ctx.beginPath();
+      for (const p of list) if (p.kind === 'bin' && !p.broken) ctx.rect(p.x - 0.3, p.y - 0.3, 0.6, 0.6);
+      ctx.fillStyle = '#2f4a3a'; ctx.fill();
+      ctx.beginPath();
+      for (const p of list) if (p.kind === 'bush') { ctx.moveTo(p.x + p.rr, p.y); ctx.arc(p.x, p.y, p.rr, 0, U.TAU); }
+      ctx.fillStyle = '#2d5626'; ctx.fill();
+      ctx.beginPath();
+      for (const p of list) if (p.kind === 'bush') { const r = p.rr * 0.6, x = p.x - p.rr * 0.25, y = p.y - p.rr * 0.25; ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, U.TAU); }
+      ctx.fillStyle = '#3f7434'; ctx.fill();
       for (const p of list) {
-        switch (p.kind) {
-          case 'hydrant':
-            if (p.broken) {
-              ctx.beginPath(); ctx.arc(p.x, p.y, 0.14, 0, U.TAU); ctx.fillStyle = '#5a1d1d'; ctx.fill();
-            } else {
-              ctx.beginPath(); ctx.arc(p.x, p.y, 0.24, 0, U.TAU); ctx.fillStyle = '#b8231f'; ctx.fill();
-              ctx.beginPath(); ctx.arc(p.x - 0.05, p.y - 0.05, 0.12, 0, U.TAU); ctx.fillStyle = '#e35a4a'; ctx.fill();
+        if (p.kind === 'bench') {
+          if (p.co === undefined) { p.co = Math.cos(p.ang); p.si = Math.sin(p.ang); }
+          const a = M[0], b = M[1], c = M[2], d = M[3];
+          ctx.setTransform(a * p.co + c * p.si, b * p.co + d * p.si, c * p.co - a * p.si, d * p.co - b * p.si, a * p.x + c * p.y + M[4], b * p.x + d * p.y + M[5]);
+          ctx.fillStyle = '#6b4a2f'; ctx.fillRect(-0.85, -0.25, 1.7, 0.5);
+          ctx.fillStyle = '#8a6440'; ctx.fillRect(-0.85, -0.25, 1.7, 0.12);
+        } else if (p.kind === 'car') {
+          DS.CarRender.drawParked(ctx, p, M);
+        } else if (p.kind === 'clip') {
+          const c = p.ref, hot = c.t > 0;
+          const spr = this._sprite(hot ? 'clipHot' : 'clip', (c.r + 0.3) * 2, (g) => {
+            g.beginPath(); g.arc(0, 0, c.r, 0, U.TAU);
+            g.fillStyle = hot ? 'rgba(255,178,62,0.28)' : 'rgba(255,58,58,0.1)'; g.fill();
+            for (let k = 0; k < 16; k++) {
+              g.beginPath(); g.arc(0, 0, c.r, (k / 16) * U.TAU, ((k + 1) / 16) * U.TAU);
+              g.lineWidth = 0.3; g.strokeStyle = k % 2 ? '#f2f2f2' : hot ? '#ffb23e' : '#e02424'; g.stroke();
             }
-            break;
-          case 'bin':
-            if (!p.broken) {
-              ctx.fillStyle = '#2f4a3a'; ctx.fillRect(p.x - 0.3, p.y - 0.3, 0.6, 0.6);
-              ctx.fillStyle = '#3f6450'; ctx.fillRect(p.x - 0.24, p.y - 0.24, 0.48, 0.3);
-            }
-            break;
-          case 'bench':
-            ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.ang);
-            ctx.fillStyle = '#6b4a2f'; ctx.fillRect(-0.85, -0.25, 1.7, 0.5);
-            ctx.fillStyle = '#8a6440'; ctx.fillRect(-0.85, -0.25, 1.7, 0.12); ctx.fillRect(-0.85, 0.02, 1.7, 0.1);
-            ctx.restore();
-            break;
-          case 'bush':
-            ctx.beginPath(); ctx.arc(p.x, p.y, p.rr, 0, U.TAU); ctx.fillStyle = '#2d5626'; ctx.fill();
-            ctx.beginPath(); ctx.arc(p.x - p.rr * 0.25, p.y - p.rr * 0.25, p.rr * 0.6, 0, U.TAU); ctx.fillStyle = '#3f7434'; ctx.fill();
-            break;
-          case 'car':
-            DS.CarRender.drawParked(ctx, p);
-            break;
-          case 'clip': {
-            const c = p.ref, hot = c.t > 0;
-            ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, U.TAU);
-            ctx.fillStyle = hot ? 'rgba(255,178,62,0.28)' : 'rgba(255,58,58,0.1)'; ctx.fill();
-            const seg = 16;
-            for (let k = 0; k < seg; k++) {
-              ctx.beginPath(); ctx.arc(c.x, c.y, c.r, (k / seg) * U.TAU, ((k + 1) / seg) * U.TAU);
-              ctx.lineWidth = 0.3; ctx.strokeStyle = k % 2 ? '#f2f2f2' : hot ? '#ffb23e' : '#e02424'; ctx.stroke();
-            }
-            ctx.beginPath(); ctx.arc(c.x, c.y, 0.28, 0, U.TAU); ctx.fillStyle = hot ? '#ffb23e' : '#e02424'; ctx.fill();
-            break;
-          }
+            g.beginPath(); g.arc(0, 0, 0.28, 0, U.TAU); g.fillStyle = hot ? '#ffb23e' : '#e02424'; g.fill();
+          });
+          const R = c.r + 0.3;
+          ctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
+          ctx.drawImage(spr, c.x - R, c.y - R, R * 2, R * 2);
         }
       }
+      ctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
       // lastik adaları
       for (const ti of this.tireIsl) {
         if (ti.x + 6 < v.x0 || ti.x - 6 > v.x1 || ti.y + 6 < v.y0 || ti.y - 6 > v.y1) continue;
-        ctx.beginPath(); ctx.arc(ti.x, ti.y, ti.r, 0, U.TAU); ctx.fillStyle = '#121316'; ctx.fill();
-        const n = 22;
-        for (let k = 0; k < n; k++) {
-          const a = (k / n) * U.TAU, x = ti.x + Math.cos(a) * (ti.r - 0.4), y = ti.y + Math.sin(a) * (ti.r - 0.4);
-          ctx.beginPath(); ctx.arc(x, y, 0.38, 0, U.TAU);
-          ctx.fillStyle = '#1d1f23'; ctx.fill();
-          ctx.lineWidth = 0.08; ctx.strokeStyle = k % 2 ? '#e8e8e8' : '#d22'; ctx.stroke();
-        }
-        ctx.beginPath(); ctx.arc(ti.x, ti.y, ti.r - 1.1, 0, U.TAU); ctx.fillStyle = '#2b4a24'; ctx.fill();
+        const spr = this._sprite('tires', ti.r * 2 + 1, (g) => {
+          g.beginPath(); g.arc(0, 0, ti.r, 0, U.TAU); g.fillStyle = '#121316'; g.fill();
+          const n = 22;
+          for (let k = 0; k < n; k++) {
+            const a = (k / n) * U.TAU, x = Math.cos(a) * (ti.r - 0.4), y = Math.sin(a) * (ti.r - 0.4);
+            g.beginPath(); g.arc(x, y, 0.38, 0, U.TAU);
+            g.fillStyle = '#1d1f23'; g.fill();
+            g.lineWidth = 0.08; g.strokeStyle = k % 2 ? '#e8e8e8' : '#d22'; g.stroke();
+          }
+          g.beginPath(); g.arc(0, 0, ti.r - 1.1, 0, U.TAU); g.fillStyle = '#2b4a24'; g.fill();
+        });
+        const R = ti.r + 0.5;
+        ctx.drawImage(spr, ti.x - R, ti.y - R, R * 2, R * 2);
       }
       // dubalar
       for (const cn of this.cones) {
@@ -1061,298 +1154,443 @@
           ctx.fillStyle = '#1b1b1b'; ctx.fillRect(cn.x - 0.26, cn.y - 0.26, 0.52, 0.52);
           ctx.beginPath(); ctx.arc(cn.x, cn.y, 0.2, 0, U.TAU); ctx.fillStyle = '#ff6a13'; ctx.fill();
           ctx.beginPath(); ctx.arc(cn.x, cn.y, 0.12, 0, U.TAU); ctx.fillStyle = '#f2f2f2'; ctx.fill();
-          ctx.beginPath(); ctx.arc(cn.x, cn.y, 0.06, 0, U.TAU); ctx.fillStyle = '#ff6a13'; ctx.fill();
         }
       }
     }
 
-    drawTallProps(ctx, v, cam, env) {
-      const list = this.visible({ x0: v.x0 - 8, y0: v.y0 - 8, x1: v.x1 + 8, y1: v.y1 + 8 }, 't');
-      const S = (h) => this.camH / (this.camH - h);
-      const pr = (x, y, k) => [cam.x + (x - cam.x) * k, cam.y + (y - cam.y) * k];
-      const kl = S(7.5);
-      // direkler
+    // Uzun nesneler (lamba, projektör, ağaç) — kare başına bir kez toplanır, üç çizimde paylaşılır
+    collectTall(v, M, W, H) {
+      const out = this._vt || (this._vt = []);
+      this.visible({ x0: v.x0 - 14, y0: v.y0 - 14, x1: v.x1 + 14, y1: v.y1 + 14 }, 't', out);
+      // döndürülmüş ekran testiyle sık eleme (lamba ışığı 13 m)
+      const z = Math.hypot(M[0], M[1]);
+      let n = 0;
+      for (let i = 0; i < out.length; i++) {
+        const p = out[i];
+        const r = (p.kind === 'tree' ? p.rc + 1 : 14) * z;
+        const sx = M[0] * p.x + M[2] * p.y + M[4], sy = M[1] * p.x + M[3] * p.y + M[5];
+        if (sx < -r || sx > W + r || sy < -r || sy > H + r) continue;
+        out[n++] = p;
+      }
+      out.length = n;
+      return out;
+    }
+
+    drawTallProps(ctx, cam, env, list) {
+      const kl = this.camH / (this.camH - 7.5), kf = this.camH / (this.camH - 16), kt = this.camH / (this.camH - 6.5);
+      const cx = cam.x, cy = cam.y;
+      // direkler (tek çizgi yolu)
       ctx.beginPath();
       for (const p of list) {
         if (p.kind === 'lamp') {
-          if (p.broken) {
-            const ex = p.x + Math.cos(p.fall) * 7.5, ey = p.y + Math.sin(p.fall) * 7.5;
-            ctx.moveTo(p.x, p.y); ctx.lineTo(ex, ey);
-          } else {
-            const [hx, hy] = pr(p.x, p.y, kl);
-            const [ax, ay] = pr(p.x + p.nx * 1.7, p.y + p.ny * 1.7, kl);
-            ctx.moveTo(p.x, p.y); ctx.lineTo(hx, hy); ctx.lineTo(ax, ay);
+          if (p.broken) { ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + Math.cos(p.fall) * 7.5, p.y + Math.sin(p.fall) * 7.5); }
+          else {
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(cx + (p.x - cx) * kl, cy + (p.y - cy) * kl);
+            ctx.lineTo(cx + (p.x + p.nx * 1.7 - cx) * kl, cy + (p.y + p.ny * 1.7 - cy) * kl);
           }
         } else if (p.kind === 'flood') {
-          const [hx, hy] = pr(p.x, p.y, S(16));
-          ctx.moveTo(p.x, p.y); ctx.lineTo(hx, hy);
+          ctx.moveTo(p.x, p.y); ctx.lineTo(cx + (p.x - cx) * kf, cy + (p.y - cy) * kf);
         }
       }
       ctx.lineWidth = 0.17; ctx.lineCap = 'round'; ctx.strokeStyle = '#3b3f46'; ctx.stroke(); ctx.lineCap = 'butt';
-      for (const p of list) {
-        if (p.kind === 'lamp') {
-          let ax, ay, ang;
-          if (p.broken) { ax = p.x + Math.cos(p.fall) * 7.5; ay = p.y + Math.sin(p.fall) * 7.5; ang = p.fall; }
-          else { [ax, ay] = pr(p.x + p.nx * 1.7, p.y + p.ny * 1.7, kl); ang = Math.atan2(p.ny, p.nx); }
-          ctx.save(); ctx.translate(ax, ay); ctx.rotate(ang);
-          ctx.fillStyle = '#2a2d33'; ctx.fillRect(-0.45, -0.22, 0.9, 0.44);
-          ctx.fillStyle = env.lamps && !p.broken ? '#ffe2a6' : '#8d9096';
-          ctx.fillRect(-0.32, -0.13, 0.64, 0.26);
-          ctx.restore();
-        } else if (p.kind === 'flood') {
-          const [hx, hy] = pr(p.x, p.y, S(16));
-          const a = Math.atan2(p.ty - p.y, p.tx - p.x);
-          ctx.save(); ctx.translate(hx, hy); ctx.rotate(a);
-          ctx.fillStyle = '#25282e'; ctx.fillRect(-0.5, -1.4, 1.0, 2.8);
-          ctx.fillStyle = env.lamps ? '#fff6dc' : '#9aa0a8';
-          for (let k = -1; k <= 1; k++) ctx.fillRect(0.1, k * 0.85 - 0.3, 0.35, 0.6);
-          ctx.restore();
+      // lamba gövdeleri ve camları: döndürülmüş dörtgenler, iki dolgu
+      const quad = (x, y, c, s, hx, hy) => {
+        ctx.moveTo(x + c * hx - s * hy, y + s * hx + c * hy);
+        ctx.lineTo(x - c * hx - s * hy, y - s * hx + c * hy);
+        ctx.lineTo(x - c * hx + s * hy, y - s * hx - c * hy);
+        ctx.lineTo(x + c * hx + s * hy, y + s * hx - c * hy);
+        ctx.closePath();
+      };
+      for (let pass = 0; pass < 2; pass++) {
+        ctx.beginPath();
+        for (const p of list) {
+          if (p.kind !== 'lamp') continue;
+          let x, y, c, s;
+          if (p.broken) { x = p.x + Math.cos(p.fall) * 7.5; y = p.y + Math.sin(p.fall) * 7.5; c = Math.cos(p.fall); s = Math.sin(p.fall); }
+          else { x = cx + (p.x + p.nx * 1.7 - cx) * kl; y = cy + (p.y + p.ny * 1.7 - cy) * kl; c = p.nx; s = p.ny; }
+          if (pass === 0) quad(x, y, c, s, 0.45, 0.22); else quad(x, y, c, s, 0.32, 0.13);
         }
+        ctx.fillStyle = pass === 0 ? '#2a2d33' : env.lamps ? '#ffe2a6' : '#8d9096';
+        ctx.fill();
       }
-      // ağaç tepeleri
-      const kt = S(6.5);
-      const spr = DS.Sprites.trees;
+      for (const p of list) {
+        if (p.kind !== 'flood') continue;
+        const hx = cx + (p.x - cx) * kf, hy = cy + (p.y - cy) * kf;
+        const a = Math.atan2(p.ty - p.y, p.tx - p.x);
+        ctx.save(); ctx.translate(hx, hy); ctx.rotate(a);
+        ctx.fillStyle = '#25282e'; ctx.fillRect(-0.5, -1.4, 1.0, 2.8);
+        ctx.fillStyle = env.lamps ? '#fff6dc' : '#9aa0a8';
+        for (let k = -1; k <= 1; k++) ctx.fillRect(0.1, k * 0.85 - 0.3, 0.35, 0.6);
+        ctx.restore();
+      }
+      // ağaç tepeleri (tek atlas)
+      const atlas = DS.Sprites.treeAtlas;
       for (const p of list) {
         if (p.kind !== 'tree') continue;
-        const [x, y] = pr(p.x, p.y, kt);
-        const r = p.rc * kt;
-        ctx.drawImage(spr[p.v], x - r, y - r, r * 2, r * 2);
+        const x = cx + (p.x - cx) * kt, y = cy + (p.y - cy) * kt, r = p.rc * kt;
+        ctx.drawImage(atlas, (p.v & 1) * 128, (p.v >> 1) * 128, 128, 128, x - r, y - r, r * 2, r * 2);
       }
     }
 
-    // Binalar ve hacimli nesneler — kameraya göre uzaktan yakına
-    drawSolids(ctx, v, cam, env, wantPaths, quality) {
-      const ext = 40, list = [];
+    // Binalar ve hacimli nesneler — kameraya göre uzaktan yakına.
+    // Işık haritası istenirse siluet/pencere geometrisi tampona kaydedilir (Path2D yok)
+    drawSolids(ctx, v, cam, env, wantLight, M, W, H) {
+      const z = Math.hypot(M[0], M[1]), camH = this.camH;
+      const list = this._vsol || (this._vsol = []);
+      list.length = 0;
+      const ext = 40;
       for (const s of this.solids) {
         if (s.x1 < v.x0 - ext || s.x0 > v.x1 + ext || s.y1 < v.y0 - ext || s.y0 > v.y1 + ext) continue;
+        // projeksiyonlu kutu (taban ∪ çatı) döndürülmüş ekrana değiyor mu?
+        const k = camH / (camH - s.h);
+        const rx0 = cam.x + (s.x0 - cam.x) * k, rx1 = cam.x + (s.x1 - cam.x) * k;
+        const ry0 = cam.y + (s.y0 - cam.y) * k, ry1 = cam.y + (s.y1 - cam.y) * k;
+        const bx0 = Math.min(s.x0, rx0), bx1 = Math.max(s.x1, rx1), by0 = Math.min(s.y0, ry0), by1 = Math.max(s.y1, ry1);
+        const mx = (bx0 + bx1) / 2, my = (by0 + by1) / 2, rad = Math.hypot(bx1 - bx0, by1 - by0) / 2 * z;
+        const sx = M[0] * mx + M[2] * my + M[4], sy = M[1] * mx + M[3] * my + M[5];
+        if (sx < -rad || sx > W + rad || sy < -rad || sy > H + rad) continue;
         const cx = (s.x0 + s.x1) / 2, cy = (s.y0 + s.y1) / 2;
         s._d = (cx - cam.x) * (cx - cam.x) + (cy - cam.y) * (cy - cam.y);
         list.push(s);
       }
       list.sort((a, b) => b._d - a._d);
-      const out = wantPaths ? [] : null;
-      for (const s of list) this._drawSolid(ctx, s, cam, env, out, quality);
-      return out;
+      this.laN = 0;
+      this._wantLight = wantLight;
+      const neon = this.neonVis || (this.neonVis = []);
+      neon.length = 0;
+      for (const s of list) this._drawSolid(ctx, s, cam, env, z);
     }
 
-    _drawSolid(ctx, s, cam, env, out, quality) {
-      const camH = this.camH;
-      const S = (h) => camH / (camH - h);
-      const k = S(s.h);
-      const bx = [s.x0, s.x1, s.x1, s.x0], by = [s.y0, s.y0, s.y1, s.y1];
-      const rx = [], ry = [];
-      for (let i = 0; i < 4; i++) { rx[i] = cam.x + (bx[i] - cam.x) * k; ry[i] = cam.y + (by[i] - cam.y) * k; }
-      const N = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+    // ışık tamponu: [nSil, nLit, ...silüet dörtgenleri(8), ...pencere dörtgenleri(8)]
+    _laReserve(n) {
+      if (!this.la) this.la = new Float32Array(16384);
+      if (this.laN + n > this.la.length) {
+        const a = new Float32Array(Math.max(this.la.length * 2, this.laN + n + 1024));
+        a.set(this.la.subarray(0, this.laN)); this.la = a;
+      }
+    }
+    _laQuad(x0, y0, x1, y1, x2, y2, x3, y3) {
+      const a = this.la, n = this.laN;
+      a[n] = x0; a[n + 1] = y0; a[n + 2] = x1; a[n + 3] = y1; a[n + 4] = x2; a[n + 5] = y2; a[n + 6] = x3; a[n + 7] = y3;
+      this.laN = n + 8;
+    }
+
+    _winPrep(s) {
+      // pencere dörtgenleri yalnızca yüksekliğe bağlı: bir kez hesapla
+      const camH = this.camH, S = (h) => camH / (camH - h);
+      const floors = Math.min(16, Math.floor((s.h - 1.6) / 3.3));
+      const lens = [s.x1 - s.x0, s.y1 - s.y0, s.x1 - s.x0, s.y1 - s.y0];
+      s.wq = [];
+      for (let e = 0; e < 4; e++) {
+        const cols = Math.max(1, Math.min(12, Math.floor(lens[e] / 3.6)));
+        const band = [], grid = [], lit = [];
+        for (let f = 0; f < floors; f++) {
+          const k0 = S(1.5 + f * 3.3), k1 = S(1.5 + f * 3.3 + 1.6);
+          band.push(0.04, 0.96, k0, k1);
+          for (let c = 0; c < cols; c++) {
+            grid.push((c + 0.18) / cols, (c + 0.82) / cols, k0, k1);
+            if (U.hash(s.id * 7 + e, f * 131 + c) < s.lit) lit.push((c + 0.16) / cols, (c + 0.84) / cols, k0, k1);
+          }
+        }
+        s.wq.push({ band: new Float32Array(band), grid: new Float32Array(grid), lit: new Float32Array(lit), fk: floors ? S(3.1) - S(1.5) : 0 });
+      }
+    }
+
+    _drawSolid(ctx, s, cam, env, z) {
+      const camH = this.camH, Q = this.Q;
+      const k = camH / (camH - s.h);
+      const cx = cam.x, cy = cam.y;
+      const BX = this._bx || (this._bx = new Float64Array(4)), BY = this._by || (this._by = new Float64Array(4));
+      const RX = this._rx || (this._rx = new Float64Array(4)), RY = this._ry || (this._ry = new Float64Array(4));
+      BX[0] = s.x0; BX[1] = s.x1; BX[2] = s.x1; BX[3] = s.x0;
+      BY[0] = s.y0; BY[1] = s.y0; BY[2] = s.y1; BY[3] = s.y1;
+      for (let i = 0; i < 4; i++) { RX[i] = cx + (BX[i] - cx) * k; RY[i] = cy + (BY[i] - cy) * k; }
       const night = env.windows;
-      const wp = out ? new Path2D() : null;
-      const lit = night ? new Path2D() : null;
-      let hasLit = false;
-      const vis = [];
+      const rec = this._wantLight && s.h >= 1.5;
+      let hdr = 0;
+      if (rec) { this._laReserve(2 + 8 * 5); hdr = this.laN; this.la[hdr] = 0; this.la[hdr + 1] = 0; this.laN += 2; }
+      let visMask = 0;
       for (let e = 0; e < 4; e++) {
         const i = e, j = (e + 1) & 3;
-        const mx = (bx[i] + bx[j]) / 2, my = (by[i] + by[j]) / 2;
-        if (N[e][0] * (cam.x - mx) + N[e][1] * (cam.y - my) <= 0) continue;
-        vis.push(e);
+        const mx = (BX[i] + BX[j]) / 2, my = (BY[i] + BY[j]) / 2;
+        if (WN[e * 2] * (cx - mx) + WN[e * 2 + 1] * (cy - my) <= 0) continue;
+        visMask |= 1 << e;
         ctx.beginPath();
-        ctx.moveTo(bx[i], by[i]); ctx.lineTo(bx[j], by[j]); ctx.lineTo(rx[j], ry[j]); ctx.lineTo(rx[i], ry[i]); ctx.closePath();
+        ctx.moveTo(BX[i], BY[i]); ctx.lineTo(BX[j], BY[j]); ctx.lineTo(RX[j], RY[j]); ctx.lineTo(RX[i], RY[i]); ctx.closePath();
         ctx.fillStyle = s.wc[e]; ctx.fill();
-        if (wp) { wp.moveTo(bx[i], by[i]); wp.lineTo(bx[j], by[j]); wp.lineTo(rx[j], ry[j]); wp.lineTo(rx[i], ry[i]); wp.closePath(); }
+        if (rec) { this._laQuad(BX[i], BY[i], BX[j], BY[j], RX[j], RY[j], RX[i], RY[i]); this.la[hdr]++; }
       }
       // cephe detayları
-      if (quality > 0) {
-        for (const e of vis) {
-          const i = e, j = (e + 1) & 3;
-          const len = Math.hypot(bx[j] - bx[i], by[j] - by[i]);
-          const P = (u, kk) => {
-            const x = bx[i] + (bx[j] - bx[i]) * u, y = by[i] + (by[j] - by[i]) * u;
-            return [cam.x + (x - cam.x) * kk, cam.y + (y - cam.y) * kk];
-          };
-          const quad = (path, u0, u1, k0, k1) => {
-            const a = P(u0, k0), b = P(u1, k0), c = P(u1, k1), d = P(u0, k1);
-            path.moveTo(a[0], a[1]); path.lineTo(b[0], b[1]); path.lineTo(c[0], c[1]); path.lineTo(d[0], d[1]); path.closePath();
-          };
-          if (s.kind === 'bld') {
-            const floors = Math.min(16, Math.floor((s.h - 1.6) / 3.3));
-            const glass = new Path2D();
-            const cols = Math.max(1, Math.min(12, Math.floor(len / 3.6)));
-            for (let f = 0; f < floors; f++) {
-              const k0 = S(1.5 + f * 3.3), k1 = S(1.5 + f * 3.3 + 1.6);
-              if (s.win === 'band' || quality < 2) quad(glass, 0.04, 0.96, k0, k1);
-              else for (let c = 0; c < cols; c++) quad(glass, (c + 0.18) / cols, (c + 0.82) / cols, k0, k1);
-              if (night) {
-                for (let c = 0; c < cols; c++) {
-                  if (U.hash(s.id * 7 + e, f * 131 + c) < s.lit) { quad(lit, (c + 0.16) / cols, (c + 0.84) / cols, k0, k1); hasLit = true; }
-                }
-              }
-            }
-            ctx.fillStyle = s.glass; ctx.fill(glass);
-            if (night && hasLit) { ctx.fillStyle = '#ffd88f'; ctx.fill(lit); }
-          } else if (s.kind === 'ware') {
-            const path = new Path2D();
-            const n = Math.floor(len / 8);
-            for (let c = 1; c < n; c++) { const u = c / n; const a = P(u, 1), b = P(u, k); path.moveTo(a[0], a[1]); path.lineTo(b[0], b[1]); }
-            ctx.lineWidth = 0.12; ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.stroke(path);
-            if (len > 20) { const door = new Path2D(); quad(door, 0.42, 0.58, 1, S(5)); ctx.fillStyle = 'rgba(40,44,50,0.75)'; ctx.fill(door); }
-          } else if (s.kind === 'cont') {
-            const path = new Path2D();
-            const n = Math.floor(len / 0.5);
-            for (let c = 1; c < n; c++) { const u = c / n; const a = P(u, 1), b = P(u, k); path.moveTo(a[0], a[1]); path.lineTo(b[0], b[1]); }
-            ctx.lineWidth = 0.05; ctx.strokeStyle = 'rgba(0,0,0,0.2)'; ctx.stroke(path);
-            if (s.h > 3) { const mid = new Path2D(); const a = P(0, S(2.6)), b = P(1, S(2.6)); mid.moveTo(a[0], a[1]); mid.lineTo(b[0], b[1]); ctx.lineWidth = 0.12; ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.stroke(mid); }
-          } else if (s.kind === 'barrier') {
-            const path = new Path2D();
-            const n = Math.max(1, Math.floor(len / 2));
-            for (let c = 0; c < n; c += 2) quad(path, c / n, (c + 1) / n, 1, k);
-            ctx.fillStyle = '#c8202a'; ctx.fill(path);
-          } else if (s.kind === 'stand') {
-            const path = new Path2D();
-            for (let f = 0; f < 3; f++) quad(path, 0.02, 0.98, S(0.6 + f * 1.2), S(1.0 + f * 1.2));
-            ctx.fillStyle = 'rgba(255,178,62,0.55)'; ctx.fill(path);
+      if (s.kind === 'bld' && visMask) {
+        if (!s.wq) this._winPrep(s);
+        const winMode = Q.windows;
+        let glassOpen = false, litN = 0;
+        // cam bantları / ızgara
+        if (winMode > 0) {
+          ctx.beginPath();
+          for (let e = 0; e < 4; e++) {
+            if (!(visMask & (1 << e))) continue;
+            const W = s.wq[e], i = e, j = (e + 1) & 3;
+            const mx = (BX[i] + BX[j]) / 2 - cx, my = (BY[i] + BY[j]) / 2 - cy;
+            const floorPx = W.fk * Math.hypot(mx, my) * z;
+            if (floorPx < 2) continue;
+            const arr = winMode === 3 || (winMode === 2 && floorPx >= 6) ? W.grid : W.band;
+            this._emitQuads(ctx, arr, BX[i] - cx, BY[i] - cy, BX[j] - BX[i], BY[j] - BY[i], cx, cy, null);
+            glassOpen = true;
           }
+          if (glassOpen) { ctx.fillStyle = s.glass; ctx.fill(); }
         }
-      }
+        // yanan pencereler (gece)
+        if (night) {
+          ctx.beginPath();
+          for (let e = 0; e < 4; e++) {
+            if (!(visMask & (1 << e))) continue;
+            const W = s.wq[e], i = e, j = (e + 1) & 3;
+            if (!W.lit.length) continue;
+            const mx = (BX[i] + BX[j]) / 2 - cx, my = (BY[i] + BY[j]) / 2 - cy;
+            if (W.fk * Math.hypot(mx, my) * z < 3) continue;
+            litN += this._emitQuads(ctx, W.lit, BX[i] - cx, BY[i] - cy, BX[j] - BX[i], BY[j] - BY[i], cx, cy, rec ? this : null);
+          }
+          if (litN) { ctx.fillStyle = '#ffd88f'; ctx.fill(); }
+          if (rec) this.la[hdr + 1] = litN;
+        }
+      } else if (s.kind !== 'bld' && visMask && Q.windows > 0) this._solidFacade(ctx, s, BX, BY, k, cam, visMask);
       // çatı
       ctx.beginPath();
-      ctx.moveTo(rx[0], ry[0]); ctx.lineTo(rx[1], ry[1]); ctx.lineTo(rx[2], ry[2]); ctx.lineTo(rx[3], ry[3]); ctx.closePath();
+      ctx.moveTo(RX[0], RY[0]); ctx.lineTo(RX[1], RY[1]); ctx.lineTo(RX[2], RY[2]); ctx.lineTo(RX[3], RY[3]); ctx.closePath();
       ctx.fillStyle = s.roof; ctx.fill();
-      const rp = out ? new Path2D() : null;
-      if (rp) { rp.moveTo(rx[0], ry[0]); rp.lineTo(rx[1], ry[1]); rp.lineTo(rx[2], ry[2]); rp.lineTo(rx[3], ry[3]); rp.closePath(); }
-      const pr = (x, y, kk) => [cam.x + (x - cam.x) * kk, cam.y + (y - cam.y) * kk];
+      if (rec) {
+        // çatı silüeti pencerelerden önce okunmalı: başlık sayıları bunu belirler, sırayı replay düzeltir
+        this._laReserve(8);
+        this._laQuad(RX[0], RY[0], RX[1], RY[1], RX[2], RY[2], RX[3], RY[3]);
+        this.la[hdr]++;
+      }
+      this._roof(ctx, s, k, cam, RX, RY, BX, BY);
+    }
+
+    // dörtgen listesini (u0,u1,k0,k1) yola ekler; rec verilirse ışık tamponuna da yazar
+    _emitQuads(ctx, arr, ax, ay, dx, dy, cx, cy, rec) {
+      const n = arr.length;
+      if (rec) rec._laReserve(n * 2);
+      for (let q = 0; q < n; q += 4) {
+        const u0 = arr[q], u1 = arr[q + 1], k0 = arr[q + 2], k1 = arr[q + 3];
+        const x0 = ax + dx * u0, y0 = ay + dy * u0, x1 = ax + dx * u1, y1 = ay + dy * u1;
+        const p0x = cx + x0 * k0, p0y = cy + y0 * k0, p1x = cx + x1 * k0, p1y = cy + y1 * k0;
+        const p2x = cx + x1 * k1, p2y = cy + y1 * k1, p3x = cx + x0 * k1, p3y = cy + y0 * k1;
+        ctx.moveTo(p0x, p0y); ctx.lineTo(p1x, p1y); ctx.lineTo(p2x, p2y); ctx.lineTo(p3x, p3y); ctx.closePath();
+        if (rec) rec._laQuad(p0x, p0y, p1x, p1y, p2x, p2y, p3x, p3y);
+      }
+      return n / 4;
+    }
+
+    _solidFacade(ctx, s, BX, BY, k, cam, visMask) {
+      const camH = this.camH, cx = cam.x, cy = cam.y;
+      const P = (i, j, u, kk) => {
+        const x = BX[i] + (BX[j] - BX[i]) * u, y = BY[i] + (BY[j] - BY[i]) * u;
+        return [cx + (x - cx) * kk, cy + (y - cy) * kk];
+      };
+      for (let e = 0; e < 4; e++) {
+        if (!(visMask & (1 << e))) continue;
+        const i = e, j = (e + 1) & 3;
+        const len = Math.hypot(BX[j] - BX[i], BY[j] - BY[i]);
+        if (s.kind === 'ware') {
+          ctx.beginPath();
+          const n = Math.floor(len / 8);
+          for (let c = 1; c < n; c++) { const a = P(i, j, c / n, 1), b = P(i, j, c / n, k); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); }
+          ctx.lineWidth = 0.12; ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.stroke();
+          if (len > 20) {
+            const kd = camH / (camH - 5);
+            const a = P(i, j, 0.42, 1), b = P(i, j, 0.58, 1), c2 = P(i, j, 0.58, kd), d = P(i, j, 0.42, kd);
+            ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c2[0], c2[1]); ctx.lineTo(d[0], d[1]); ctx.closePath();
+            ctx.fillStyle = 'rgba(40,44,50,0.75)'; ctx.fill();
+          }
+        } else if (s.kind === 'cont' && this.Q.windows > 1) {
+          ctx.beginPath();
+          const n = Math.floor(len / 0.5);
+          for (let c = 1; c < n; c++) { const a = P(i, j, c / n, 1), b = P(i, j, c / n, k); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); }
+          ctx.lineWidth = 0.05; ctx.strokeStyle = 'rgba(0,0,0,0.2)'; ctx.stroke();
+        } else if (s.kind === 'barrier') {
+          ctx.beginPath();
+          const n = Math.max(1, Math.floor(len / 2));
+          for (let c = 0; c < n; c += 2) {
+            const a = P(i, j, c / n, 1), b = P(i, j, (c + 1) / n, 1), c2 = P(i, j, (c + 1) / n, k), d = P(i, j, c / n, k);
+            ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c2[0], c2[1]); ctx.lineTo(d[0], d[1]); ctx.closePath();
+          }
+          ctx.fillStyle = '#c8202a'; ctx.fill();
+        } else if (s.kind === 'stand') {
+          ctx.beginPath();
+          for (let f = 0; f < 3; f++) {
+            const k0 = camH / (camH - (0.6 + f * 1.2)), k1 = camH / (camH - (1.0 + f * 1.2));
+            const a = P(i, j, 0.02, k0), b = P(i, j, 0.98, k0), c2 = P(i, j, 0.98, k1), d = P(i, j, 0.02, k1);
+            ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c2[0], c2[1]); ctx.lineTo(d[0], d[1]); ctx.closePath();
+          }
+          ctx.fillStyle = 'rgba(255,178,62,0.55)'; ctx.fill();
+        }
+      }
+    }
+
+    _roof(ctx, s, k, cam, RX, RY, BX, BY) {
+      const camH = this.camH, Q = this.Q, cx = cam.x, cy = cam.y;
+      const px = (x, kk) => cx + (x - cx) * kk, py = (y, kk) => cy + (y - cy) * kk;
       if (s.kind === 'bld') {
         const ins = 0.7;
-        const a = pr(s.x0 + ins, s.y0 + ins, k), b = pr(s.x1 - ins, s.y1 - ins, k);
+        const ax = px(s.x0 + ins, k), ay = py(s.y0 + ins, k), bx = px(s.x1 - ins, k), by = py(s.y1 - ins, k);
         ctx.lineWidth = 0.3; ctx.strokeStyle = 'rgba(0,0,0,0.25)';
-        ctx.strokeRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
-        ctx.lineWidth = 0.14; ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-        ctx.strokeRect(rx[0] + 0.1, ry[0] + 0.1, rx[2] - rx[0] - 0.2, ry[2] - ry[0] - 0.2);
-        if (quality > 0) {
+        ctx.strokeRect(ax, ay, bx - ax, by - ay);
+        if (Q.roofDetail) {
+          ctx.lineWidth = 0.14; ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+          ctx.strokeRect(RX[0] + 0.1, RY[0] + 0.1, RX[2] - RX[0] - 0.2, RY[2] - RY[0] - 0.2);
           for (const d of s.det) {
             if (d.t === 'ac') {
-              const kk = S(s.h + 1.2);
-              const p0 = pr(d.x0, d.y0, k), p1 = pr(d.x1, d.y1, k);
-              ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(p0[0] + 0.25, p0[1] + 0.25, p1[0] - p0[0], p1[1] - p0[1]);
-              const q0 = pr(d.x0, d.y0, kk), q1 = pr(d.x1, d.y1, kk);
-              ctx.fillStyle = '#b9bcc0'; ctx.fillRect(q0[0], q0[1], q1[0] - q0[0], q1[1] - q0[1]);
-              ctx.beginPath(); const cx = (q0[0] + q1[0]) / 2, cy = (q0[1] + q1[1]) / 2;
-              ctx.arc(cx, cy, Math.min(q1[0] - q0[0], q1[1] - q0[1]) * 0.3, 0, U.TAU);
+              const kk = camH / (camH - s.h - 1.2);
+              ctx.fillStyle = 'rgba(0,0,0,0.25)';
+              ctx.fillRect(px(d.x0, k) + 0.25, py(d.y0, k) + 0.25, px(d.x1, k) - px(d.x0, k), py(d.y1, k) - py(d.y0, k));
+              const q0x = px(d.x0, kk), q0y = py(d.y0, kk), q1x = px(d.x1, kk), q1y = py(d.y1, kk);
+              ctx.fillStyle = '#b9bcc0'; ctx.fillRect(q0x, q0y, q1x - q0x, q1y - q0y);
+              ctx.beginPath(); ctx.arc((q0x + q1x) / 2, (q0y + q1y) / 2, Math.min(q1x - q0x, q1y - q0y) * 0.3, 0, U.TAU);
               ctx.fillStyle = '#6d7176'; ctx.fill();
             } else if (d.t === 'tank') {
-              const kk = S(s.h + 3);
-              const c = pr(d.x, d.y, kk);
-              ctx.beginPath(); ctx.arc(c[0], c[1], d.r * kk, 0, U.TAU); ctx.fillStyle = '#8b6a4c'; ctx.fill();
+              const kk = camH / (camH - s.h - 3);
+              ctx.beginPath(); ctx.arc(px(d.x, kk), py(d.y, kk), d.r * kk, 0, U.TAU); ctx.fillStyle = '#8b6a4c'; ctx.fill();
               ctx.lineWidth = 0.12; ctx.strokeStyle = '#5d4532'; ctx.stroke();
             } else if (d.t === 'heli') {
-              const c = pr(d.x, d.y, k);
-              ctx.beginPath(); ctx.arc(c[0], c[1], d.r * k, 0, U.TAU);
+              const hx = px(d.x, k), hy = py(d.y, k), r = d.r * k;
+              ctx.beginPath(); ctx.arc(hx, hy, r, 0, U.TAU);
               ctx.lineWidth = 0.4; ctx.strokeStyle = 'rgba(255,214,90,0.85)'; ctx.stroke();
-              ctx.save(); ctx.translate(c[0], c[1]);
-              ctx.font = `700 ${d.r * k * 1.1}px Bungee, Impact, sans-serif`;
-              ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = 'rgba(255,255,255,0.8)';
-              ctx.fillText('H', 0, 0); ctx.restore();
+              // 'H' harfi: yazı yerine üç dikdörtgen (her karede font çözümlemesi yok)
+              ctx.fillStyle = 'rgba(255,255,255,0.8)';
+              const w = r * 0.12, hh = r * 0.55;
+              ctx.fillRect(hx - r * 0.32, hy - hh, w, hh * 2); ctx.fillRect(hx + r * 0.32 - w, hy - hh, w, hh * 2);
+              ctx.fillRect(hx - r * 0.32, hy - w / 2, r * 0.64, w);
             }
           }
         }
-        if (s.neon && out) {
+        if (s.neon) {
           const e = s.neon.e, i = e, j = (e + 1) & 3;
-          const kk = S(s.h + 1.6);
-          const a2 = pr(bx[i] + (bx[j] - bx[i]) * 0.2, by[i] + (by[j] - by[i]) * 0.2, kk);
-          const b2 = pr(bx[i] + (bx[j] - bx[i]) * 0.8, by[i] + (by[j] - by[i]) * 0.8, kk);
-          s._neon = [a2[0], a2[1], b2[0], b2[1]];
-        } else s._neon = null;
+          const kk = camH / (camH - s.h - 1.6);
+          if (!s._neon) s._neon = new Float64Array(4);
+          s._neon[0] = px(BX[i] + (BX[j] - BX[i]) * 0.2, kk); s._neon[1] = py(BY[i] + (BY[j] - BY[i]) * 0.2, kk);
+          s._neon[2] = px(BX[i] + (BX[j] - BX[i]) * 0.8, kk); s._neon[3] = py(BY[i] + (BY[j] - BY[i]) * 0.8, kk);
+          this.neonVis.push(s);
+        }
       } else if (s.kind === 'ware') {
-        const path = new Path2D();
-        const horiz = s.x1 - s.x0 > s.y1 - s.y0;
-        if (horiz) for (let y = s.y0 + 1.2; y < s.y1; y += 1.2) { const a = pr(s.x0, y, k), b = pr(s.x1, y, k); path.moveTo(a[0], a[1]); path.lineTo(b[0], b[1]); }
-        else for (let x = s.x0 + 1.2; x < s.x1; x += 1.2) { const a = pr(x, s.y0, k), b = pr(x, s.y1, k); path.moveTo(a[0], a[1]); path.lineTo(b[0], b[1]); }
-        ctx.lineWidth = 0.1; ctx.strokeStyle = 'rgba(0,0,0,0.22)'; ctx.stroke(path);
+        ctx.beginPath();
+        if (s.x1 - s.x0 > s.y1 - s.y0) for (let y = s.y0 + 1.2; y < s.y1; y += 1.2) { ctx.moveTo(px(s.x0, k), py(y, k)); ctx.lineTo(px(s.x1, k), py(y, k)); }
+        else for (let x = s.x0 + 1.2; x < s.x1; x += 1.2) { ctx.moveTo(px(x, k), py(s.y0, k)); ctx.lineTo(px(x, k), py(s.y1, k)); }
+        ctx.lineWidth = 0.1; ctx.strokeStyle = 'rgba(0,0,0,0.22)'; ctx.stroke();
       } else if (s.kind === 'cont') {
-        const path = new Path2D();
-        for (let x = s.x0 + 0.6; x < s.x1; x += 0.6) { const a = pr(x, s.y0, k), b = pr(x, s.y1, k); path.moveTo(a[0], a[1]); path.lineTo(b[0], b[1]); }
-        ctx.lineWidth = 0.05; ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.stroke(path);
+        if (Q.windows > 1) {
+          ctx.beginPath();
+          for (let x = s.x0 + 0.6; x < s.x1; x += 0.6) { ctx.moveTo(px(x, k), py(s.y0, k)); ctx.lineTo(px(x, k), py(s.y1, k)); }
+          ctx.lineWidth = 0.05; ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.stroke();
+        }
       } else if (s.kind === 'barrier') {
-        const path = new Path2D();
+        ctx.beginPath();
         const horiz = s.x1 - s.x0 > s.y1 - s.y0;
         const L = horiz ? s.x1 - s.x0 : s.y1 - s.y0;
         for (let c = 0; c < L; c += 4) {
           const e2 = Math.min(L, c + 2);
-          const a = horiz ? pr(s.x0 + c, s.y0, k) : pr(s.x0, s.y0 + c, k);
-          const b = horiz ? pr(s.x0 + e2, s.y1, k) : pr(s.x1, s.y0 + e2, k);
-          path.rect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+          const ax = horiz ? px(s.x0 + c, k) : px(s.x0, k), ay = horiz ? py(s.y0, k) : py(s.y0 + c, k);
+          const bx = horiz ? px(s.x0 + e2, k) : px(s.x1, k), by = horiz ? py(s.y1, k) : py(s.y0 + e2, k);
+          ctx.rect(ax, ay, bx - ax, by - ay);
         }
-        ctx.fillStyle = '#d0232c'; ctx.fill(path);
+        ctx.fillStyle = '#d0232c'; ctx.fill();
       } else if (s.kind === 'rail') {
-        const path = new Path2D();
-        const horiz = s.x1 - s.x0 > s.y1 - s.y0;
-        const L = horiz ? s.x1 - s.x0 : s.y1 - s.y0;
-        for (let c = 0; c < L; c += 2.5) {
-          const a = horiz ? pr(s.x0 + c, (s.y0 + s.y1) / 2, k) : pr((s.x0 + s.x1) / 2, s.y0 + c, k);
-          path.moveTo(a[0] + 0.12, a[1]); path.arc(a[0], a[1], 0.12, 0, U.TAU);
+        if (Q.windows > 0) {
+          ctx.beginPath();
+          const horiz = s.x1 - s.x0 > s.y1 - s.y0;
+          const L = horiz ? s.x1 - s.x0 : s.y1 - s.y0;
+          for (let c = 0; c < L; c += 2.5) {
+            const ax = horiz ? px(s.x0 + c, k) : px((s.x0 + s.x1) / 2, k), ay = horiz ? py((s.y0 + s.y1) / 2, k) : py(s.y0 + c, k);
+            ctx.moveTo(ax + 0.12, ay); ctx.arc(ax, ay, 0.12, 0, U.TAU);
+          }
+          ctx.fillStyle = '#5c636b'; ctx.fill();
         }
-        ctx.fillStyle = '#5c636b'; ctx.fill(path);
       } else if (s.kind === 'stand') {
-        const path = new Path2D();
-        for (let y = s.y0 + 0.8; y < s.y1; y += 1.3) { const a = pr(s.x0, y, k), b = pr(s.x1, y, k); path.moveTo(a[0], a[1]); path.lineTo(b[0], b[1]); }
-        ctx.lineWidth = 0.35; ctx.strokeStyle = 'rgba(255,90,60,0.6)'; ctx.stroke(path);
+        ctx.beginPath();
+        for (let y = s.y0 + 0.8; y < s.y1; y += 1.3) { ctx.moveTo(px(s.x0, k), py(y, k)); ctx.lineTo(px(s.x1, k), py(y, k)); }
+        ctx.lineWidth = 0.35; ctx.strokeStyle = 'rgba(255,90,60,0.6)'; ctx.stroke();
       }
-      if (out) out.push({ w: wp, r: rp, lit: hasLit ? lit : null });
     }
 
     // Gece ışık haritasına zemin ışıkları ('lighter' modunda)
-    drawLightSources(lctx, v, env) {
+    drawLightSources(lctx, env, list, M, W, H) {
       const spr = DS.Sprites;
       lctx.globalAlpha = env.lampA;
-      const list = this.visible({ x0: v.x0 - 80, y0: v.y0 - 80, x1: v.x1 + 80, y1: v.y1 + 80 }, 't');
       for (const p of list) {
         if (p.kind === 'lamp' && !p.broken) {
           const x = p.x + p.nx * 1.9, y = p.y + p.ny * 1.9, r = 13;
           lctx.drawImage(spr.sodium, x - r, y - r, r * 2, r * 2);
-        } else if (p.kind === 'flood') {
-          const a = Math.atan2(p.ty - p.y, p.tx - p.x);
-          const x = p.x + Math.cos(a) * 30, y = p.y + Math.sin(a) * 30, r = 52;
-          lctx.drawImage(spr.white, x - r, y - r, r * 2, r * 2);
         }
+      }
+      // projektörler: uzun menzil, ayrı ve sıkı eleme
+      const z = Math.hypot(M[0], M[1]), R = this.Q.flood;
+      for (const p of this.floods) {
+        const a = Math.atan2(p.ty - p.y, p.tx - p.x);
+        const x = p.x + Math.cos(a) * 30, y = p.y + Math.sin(a) * 30;
+        const sx = M[0] * x + M[2] * y + M[4], sy = M[1] * x + M[3] * y + M[5], rr = R * z;
+        if (sx < -rr || sx > W + rr || sy < -rr || sy > H + rr) continue;
+        lctx.drawImage(spr.white, x - R, y - R, R * 2, R * 2);
       }
       lctx.globalAlpha = 1;
     }
-    // Bina siluetleri ışık haritasında ışığı keser, yanan pencereler aydınlatır
-    drawSolidsLight(lctx, paths, env) {
-      if (!paths) return;
-      for (const p of paths) {
-        lctx.fillStyle = env.bldAmb;
-        if (p.w) lctx.fill(p.w);
-        if (p.r) lctx.fill(p.r);
-        if (p.lit) { lctx.fillStyle = '#fff4dc'; lctx.fill(p.lit); }
+    // Bina siluetleri ışık haritasında ışığı keser, yanan pencereler aydınlatır (kayıttan oynatma)
+    drawSolidsLight(lctx, env) {
+      const a = this.la;
+      if (!a || !this.laN) return;
+      let i = 0;
+      while (i < this.laN) {
+        const nSil = a[i], nLit = a[i + 1];
+        i += 2;
+        // kayıt sırası: duvarlar, (pencereler), çatı — silüet = duvarlar + çatı
+        const wallN = nSil - 1;
+        lctx.beginPath();
+        for (let q = 0; q < wallN; q++, i += 8) {
+          lctx.moveTo(a[i], a[i + 1]); lctx.lineTo(a[i + 2], a[i + 3]); lctx.lineTo(a[i + 4], a[i + 5]); lctx.lineTo(a[i + 6], a[i + 7]); lctx.closePath();
+        }
+        const litStart = i;
+        i += nLit * 8;
+        lctx.moveTo(a[i], a[i + 1]); lctx.lineTo(a[i + 2], a[i + 3]); lctx.lineTo(a[i + 4], a[i + 5]); lctx.lineTo(a[i + 6], a[i + 7]); lctx.closePath();
+        i += 8;
+        lctx.fillStyle = env.bldAmb; lctx.fill();
+        if (nLit) {
+          lctx.beginPath();
+          for (let q = 0, j = litStart; q < nLit; q++, j += 8) {
+            lctx.moveTo(a[j], a[j + 1]); lctx.lineTo(a[j + 2], a[j + 3]); lctx.lineTo(a[j + 4], a[j + 5]); lctx.lineTo(a[j + 6], a[j + 7]); lctx.closePath();
+          }
+          lctx.fillStyle = '#fff4dc'; lctx.fill();
+        }
       }
     }
     // Parlama katmanı ('lighter')
-    drawEmissive(ctx, v, cam, env, t) {
+    drawEmissive(ctx, cam, env, t, list) {
       const spr = DS.Sprites;
-      const list = this.visible({ x0: v.x0 - 8, y0: v.y0 - 8, x1: v.x1 + 8, y1: v.y1 + 8 }, 't');
-      const kl = this.camH / (this.camH - 7.5);
+      const kl = this.camH / (this.camH - 7.5), kf = this.camH / (this.camH - 16);
       ctx.globalAlpha = 0.9 * env.lampA;
       for (const p of list) {
         if (p.kind === 'lamp' && !p.broken) {
           const x = cam.x + (p.x + p.nx * 1.7 - cam.x) * kl, y = cam.y + (p.y + p.ny * 1.7 - cam.y) * kl;
           ctx.drawImage(spr.sodium, x - 2.2, y - 2.2, 4.4, 4.4);
         } else if (p.kind === 'flood') {
-          const k = this.camH / (this.camH - 16);
-          const x = cam.x + (p.x - cam.x) * k, y = cam.y + (p.y - cam.y) * k;
+          const x = cam.x + (p.x - cam.x) * kf, y = cam.y + (p.y - cam.y) * kf;
           ctx.drawImage(spr.white, x - 4, y - 4, 8, 8);
         }
       }
       ctx.globalAlpha = 1;
-      // neon tabelalar
-      for (const s of this.solids) {
-        if (!s._neon || s.x1 < v.x0 - 40 || s.x0 > v.x1 + 40 || s.y1 < v.y0 - 40 || s.y0 > v.y1 + 40) continue;
-        const [ax, ay, bx, by] = s._neon;
+      // neon tabelalar (yalnızca bu karede çizilen binalar)
+      const neon = this.neonVis || [];
+      if (!neon.length) return;
+      ctx.lineCap = 'round';
+      for (const s of neon) {
+        const n = s._neon;
         const flick = 0.75 + 0.25 * Math.sin(t * 9 + s.id) * Math.sin(t * 2.3 + s.id * 3);
-        ctx.lineCap = 'round';
         ctx.globalAlpha = 0.35 * flick; ctx.lineWidth = 2.2; ctx.strokeStyle = s.neon.col;
-        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(n[0], n[1]); ctx.lineTo(n[2], n[3]); ctx.stroke();
         ctx.globalAlpha = 0.95 * flick; ctx.lineWidth = 0.45; ctx.strokeStyle = '#ffffff';
-        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
-        ctx.globalAlpha = 1; ctx.lineCap = 'butt';
+        ctx.beginPath(); ctx.moveTo(n[0], n[1]); ctx.lineTo(n[2], n[3]); ctx.stroke();
       }
+      ctx.globalAlpha = 1; ctx.lineCap = 'butt';
     }
 
     // Mini harita görüntüsü

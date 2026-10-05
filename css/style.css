@@ -228,8 +228,10 @@ body.tandem #drift { top: calc(64px + var(--sat)); }
 .t-gap b { font-family: var(--f-display); font-weight: 400; font-size: 15px; font-variant-numeric: tabular-nums; }
 .gapbar { position: relative; height: 10px; background: rgba(255, 255, 255, 0.1); }
 .gapbar .zone { position: absolute; left: 5%; width: 25%; top: 0; bottom: 0; background: rgba(95, 224, 176, 0.35); }
-.gapbar .mark { position: absolute; top: -3px; width: 4px; height: 16px; margin-left: -2px; background: var(--tail); }
-.gapbar .mark.good { background: var(--mint); }
+/* işaret: tam genişlikli kap translateX(%) ile kayar (yüzde, çubuk genişliğine göredir), görünen çizgi ::after */
+.gapbar .mark { position: absolute; top: -3px; left: 0; width: 100%; height: 16px; pointer-events: none; }
+.gapbar .mark::after { content: ''; position: absolute; left: -2px; top: 0; width: 4px; height: 16px; background: var(--tail); }
+.gapbar .mark.good::after { background: var(--mint); }
 #countdown { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); font-family: var(--f-display); font-size: clamp(60px, 16vmin, 130px); color: var(--sodium); text-shadow: 5px 5px 0 var(--tail); }
 #countdown.pop { animation: cd 0.9s ease; }
 @keyframes cd { 0% { transform: translate(-50%, -50%) scale(1.8); opacity: 0; } 20% { transform: translate(-50%, -50%) scale(1); opacity: 1; } 100% { opacity: 0.85; } }
@@ -316,3 +318,8 @@ body.manual .pad-gears { display: block; }
   #countdown.pop { animation: none; }
   #drift { transition: none; }
 }
+
+/* düşük kademeler: tam ekran bulanıklık ve kenar karartması kapalı (her karede yeniden hesaplanırdı) */
+body.q0 .screen.overlay, body.q1 .screen.overlay { backdrop-filter: none; background: rgba(6, 8, 13, 0.86); }
+body.q0 #vignette, body.q1 #vignette { display: none; }
+#fps { background: rgba(10, 13, 20, 0.6); padding: 2px 8px; }

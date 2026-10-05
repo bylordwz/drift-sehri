@@ -105,6 +105,7 @@
       this.steer = 0; this.axf = 0; this.ayf = 0; this.brakeOn = false; this.revOn = false;
       this.rpm = this.def.idle; this.slipR = 0; this.slipF = 0; this.wob = 0;
       this.place();
+      this.px = this.x; this.py = this.y; this.ph = this.h;
     }
     place() {
       const q = this.path.at(this.s);

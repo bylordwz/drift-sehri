@@ -29,10 +29,15 @@
       this.usingPad = false;
       this.els = {};
       this.enabled = true;
+      this.padCount = 0;
+      this.onState = {};
     }
 
     attach(root) {
       this.root = root;
+      // kumanda yalnızca bağlıyken yoklanır
+      window.addEventListener('gamepadconnected', () => { this.padCount++; });
+      window.addEventListener('gamepaddisconnected', () => { this.padCount = Math.max(0, this.padCount - 1); this.usingPad = false; });
       root.querySelectorAll('[data-ctl]').forEach((el) => { this.els[el.dataset.ctl] = el; });
       window.addEventListener('keydown', (e) => {
         if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT')) return;
@@ -145,8 +150,11 @@
         steer = this.dsteer;
       }
       // oyun kumandası
-      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-      const gp = pads && Array.from(pads).find((p) => p && p.connected);
+      let gp = null;
+      if (this.padCount > 0 && navigator.getGamepads) {
+        const pads = navigator.getGamepads();
+        for (let i = 0; i < pads.length; i++) if (pads[i] && pads[i].connected) { gp = pads[i]; break; }
+      }
       if (gp) {
         const b = (i) => (gp.buttons[i] ? gp.buttons[i].value || (gp.buttons[i].pressed ? 1 : 0) : 0);
         const ax = gp.axes[0] || 0;
@@ -170,9 +178,13 @@
       this.gasWas = gasOn;
 
       o.steer = steer; o.throttle = gas; o.brake = brake; o.handbrake = hand; o.kick = kick;
-      for (const k in HOLD) {
-        const el = this.els[k];
-        if (el) el.classList.toggle('on', this.held(k));
+      if (document.body.classList.contains('touch')) {
+        for (const k in HOLD) {
+          const el = this.els[k];
+          if (!el) continue;
+          const on = this.held(k);
+          if (this.onState[k] !== on) { this.onState[k] = on; el.classList.toggle('on', on); }
+        }
       }
       return o;
     }

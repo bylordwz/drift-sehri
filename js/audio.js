@@ -23,7 +23,7 @@
 
   class GameAudio {
     constructor() {
-      this.ctx = null; this.on = true; this.vol = 0.8; this.ready = false;
+      this.ctx = null; this.on = true; this.vol = 0.8; this.ready = false; this._last = {}; this.hz = 60; this.os = '2x';
     }
 
     init() {
@@ -67,11 +67,25 @@
       this.ready = true;
     }
 
+    // Kademe: parametre güncelleme sıklığı ve dalga şekillendirici örneklemesi
+    setQuality(Q) {
+      this.hz = Q.audioHz;
+      this.os = Q.oversample;
+      if (this.eng && this.eng.shaper) this.eng.shaper.oversample = this.os;
+      if (this.leng && this.leng.shaper) this.leng.shaper.oversample = this.os;
+    }
+    // Parametreyi yalnızca anlamlı değiştiyse gönder (her karede otomasyon olayı biriktirmesin)
+    st(param, v, tc, key) {
+      const last = this._last[key];
+      if (last !== undefined && Math.abs(v - last) <= Math.max(0.002, Math.abs(v) * 0.01)) return;
+      this._last[key] = v;
+      param.setTargetAtTime(v, this.ctx.currentTime, tc);
+    }
     makeEngine(voice) {
       const c = this.ctx, vc = VOICES[voice] || VOICES.i4;
       const out = c.createGain(); out.gain.value = 0;
       const filt = c.createBiquadFilter(); filt.type = 'lowpass'; filt.Q.value = 3.5; filt.frequency.value = 800;
-      const shaper = c.createWaveShaper(); shaper.curve = distCurve(vc.dist); shaper.oversample = '2x';
+      const shaper = c.createWaveShaper(); shaper.curve = distCurve(vc.dist); shaper.oversample = this.os || '2x';
       const am = c.createGain(); am.gain.value = 0.75;
       const mk = (type, gain) => {
         const o = c.createOscillator(); o.type = type;
@@ -84,7 +98,7 @@
       const lfo = c.createOscillator(); lfo.type = 'triangle';
       const lfoG = c.createGain(); lfoG.gain.value = vc.amd;
       lfo.connect(lfoG); lfoG.connect(am.gain); lfo.start();
-      return { o1, o2, o3, lfo, filt, out, vc, nodes: [o1, o2, o3, lfo] };
+      return { o1, o2, o3, lfo, filt, out, vc, shaper, nodes: [o1, o2, o3, lfo], id: Math.random() };
     }
     dropEngine(e) {
       if (!e) return;
@@ -116,6 +130,7 @@
     }
     silence() {
       if (!this.ready) return;
+      this._last = {};
       const t = this.ctx.currentTime;
       for (const g of [this.tireA.g, this.tireB.g, this.wind.g, this.grass.g, this.scrape.g, this.sqG, this.tbG]) g.gain.setTargetAtTime(0, t, 0.05);
       if (this.eng) this.eng.out.gain.setTargetAtTime(0, t, 0.08);
@@ -123,35 +138,39 @@
     }
 
     engineParams(e, rpm, thr, redline, vol) {
-      const t = this.ctx.currentTime, vc = e.vc;
+      const vc = e.vc, k = e.id;
       const f = Math.max(12, (rpm / 30) * vc.fmul);
-      e.o1.frequency.setTargetAtTime(f, t, 0.015);
-      e.o2.frequency.setTargetAtTime(f * vc.r2, t, 0.015);
-      e.o3.frequency.setTargetAtTime(f * vc.r3 * 1.004, t, 0.015);
-      e.lfo.frequency.setTargetAtTime(f * vc.amr, t, 0.015);
+      this.st(e.o1.frequency, f, 0.015, k + 'f1');
+      this.st(e.o2.frequency, f * vc.r2, 0.015, k + 'f2');
+      this.st(e.o3.frequency, f * vc.r3 * 1.004, 0.015, k + 'f3');
+      this.st(e.lfo.frequency, f * vc.amr, 0.015, k + 'lf');
       const rn = rpm / redline;
-      e.filt.frequency.setTargetAtTime(vc.fb + thr * 2400 + rn * 1500, t, 0.03);
-      e.out.gain.setTargetAtTime((0.09 + thr * 0.2 + rn * 0.09) * vol, t, 0.03);
+      this.st(e.filt.frequency, vc.fb + thr * 2400 + rn * 1500, 0.03, k + 'fl');
+      this.st(e.out.gain, (0.09 + thr * 0.2 + rn * 0.09) * vol, 0.03, k + 'g');
     }
 
-    // Her karede çağrılır
-    update(s) {
+    // Her karede çağrılır; parametreler kademeye göre en fazla audioHz kez gönderilir
+    update(s, dt) {
       if (!this.ready || !this.eng) return;
+      this._acc = (this._acc || 0) + (dt || 0.016);
+      if (this._acc < 1 / (this.hz || 60)) return;
+      this._acc = 0;
+      if (!this._last) this._last = {};
       const t = this.ctx.currentTime;
       this.engineParams(this.eng, s.rpm, s.load, s.redline, 1);
       const slip = U.sat((s.slip - 1.5) / 9);
       const sp = U.sat(s.speed / 40);
-      this.tireA.g.gain.setTargetAtTime(slip * 0.24, t, 0.04);
-      this.tireB.g.gain.setTargetAtTime(slip * 0.07, t, 0.04);
-      this.tireA.fl.frequency.setTargetAtTime(880 + sp * 260 + Math.sin(t * 7) * 40, t, 0.05);
-      this.sqG.gain.setTargetAtTime(slip * 0.018, t, 0.05);
-      this.sq.frequency.setTargetAtTime(980 + sp * 220 + Math.sin(t * 13) * 30, t, 0.03);
-      this.wind.g.gain.setTargetAtTime(sp * sp * 0.12, t, 0.1);
-      this.grass.g.gain.setTargetAtTime(s.grass ? sp * 0.3 : 0, t, 0.06);
-      this.scrape.g.gain.setTargetAtTime(U.sat(s.scrape) * 0.22, t, 0.03);
-      this.tbG.gain.setTargetAtTime(s.turbo ? s.boost * s.load * 0.03 : 0, t, 0.05);
-      this.tb.frequency.setTargetAtTime(1500 + s.boost * 3300, t, 0.05);
-      this.rain.g.gain.setTargetAtTime(s.rain ? 0.05 : 0, t, 0.3);
+      this.st(this.tireA.g.gain, slip * 0.24, 0.04, 'ta');
+      this.st(this.tireB.g.gain, slip * 0.07, 0.04, 'tb');
+      this.st(this.tireA.fl.frequency, 880 + sp * 260 + Math.sin(t * 7) * 40, 0.05, 'tf');
+      this.st(this.sqG.gain, slip * 0.018, 0.05, 'sq');
+      this.st(this.sq.frequency, 980 + sp * 220 + Math.sin(t * 13) * 30, 0.03, 'sf');
+      this.st(this.wind.g.gain, sp * sp * 0.12, 0.1, 'wi');
+      this.st(this.grass.g.gain, s.grass ? sp * 0.3 : 0, 0.06, 'gr');
+      this.st(this.scrape.g.gain, U.sat(s.scrape) * 0.22, 0.03, 'sc');
+      this.st(this.tbG.gain, s.turbo ? s.boost * s.load * 0.03 : 0, 0.05, 'tg');
+      this.st(this.tb.frequency, 1500 + s.boost * 3300, 0.05, 'tq');
+      this.st(this.rain.g.gain, s.rain ? 0.05 : 0, 0.3, 'rn');
       if (this.leng) {
         const v = 1 / (1 + s.ldist / 9);
         this.engineParams(this.leng, s.lrpm, 0.8, 7000, v * 0.8);
