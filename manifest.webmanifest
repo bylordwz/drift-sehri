@@ -1,0 +1,11 @@
+{
+  "name": "Drift Şehri",
+  "short_name": "Drift Şehri",
+  "description": "2D şehir içi drift oyunu",
+  "start_url": "./index.html",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0b0e14",
+  "theme_color": "#0b0e14",
+  "icons": [{ "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

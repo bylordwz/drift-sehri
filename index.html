@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b0e14">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="description" content="Tarayıcıda ve mobilde oynanan 2D şehir içi drift oyunu.">
+<title>Drift Şehri</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bungee&family=Chakra+Petch:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<canvas id="game" aria-label="Oyun alanı"></canvas>
+<div id="vignette" aria-hidden="true"></div>
+
+<!-- ============ OYUN İÇİ GÖSTERGELER ============ -->
+<div id="hud" hidden>
+  <div id="hud-tl">
+    <div class="stat"><span class="lbl">Puan</span><b id="h-total">0</b></div>
+    <div class="stat"><span class="lbl">Kasa</span><b id="h-money">₺0</b></div>
+  </div>
+
+  <div id="drift" aria-live="polite">
+    <div id="d-chain">0</div>
+    <div id="d-row"><span id="d-mult">x1.0</span><span id="d-flag"></span></div>
+    <div id="d-angle"><i id="d-angle-fill"></i><span id="d-angle-num">0°</span></div>
+  </div>
+  <div id="msgs" aria-live="polite"></div>
+
+  <div id="hud-tr">
+    <button id="btn-pause" class="icon-btn" aria-label="Duraklat">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></svg>
+    </button>
+    <canvas id="minimap" width="120" height="120" aria-label="Mini harita"></canvas>
+  </div>
+
+  <div id="tandem-hud" hidden>
+    <div class="t-prog"><i id="t-prog"></i></div>
+    <div class="t-row">
+      <div class="t-gap"><span class="lbl">Mesafe</span><b id="t-gap-n">0 m</b></div>
+      <div class="gapbar" aria-hidden="true"><i class="zone"></i><i id="t-gap-mark" class="mark"></i></div>
+      <div class="t-gap"><span class="lbl">Takip</span><b id="t-score-n">0</b></div>
+    </div>
+  </div>
+  <div id="countdown" hidden></div>
+
+  <canvas id="gauge" width="176" height="112" aria-label="Devir ve hız göstergesi"></canvas>
+
+  <div id="controls">
+    <div class="pad-left">
+      <button class="ctl steer" data-ctl="left" aria-label="Sola dön">
+        <svg viewBox="0 0 40 40" aria-hidden="true"><path d="M26 7 L11 20 L26 33" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="ctl steer" data-ctl="right" aria-label="Sağa dön">
+        <svg viewBox="0 0 40 40" aria-hidden="true"><path d="M14 7 L29 20 L14 33" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="slider" data-ctl="slider" aria-label="Direksiyon kaydırıcısı"><i class="knob"></i></div>
+    </div>
+    <div class="pad-right">
+      <button class="ctl hand" data-ctl="hand" aria-label="El freni"><span>EL FRENİ</span></button>
+      <button class="ctl pedal brake" data-ctl="brake" aria-label="Fren / geri"><span>FREN</span></button>
+      <button class="ctl pedal gas" data-ctl="gas" aria-label="Gaz"><span>GAZ</span></button>
+    </div>
+    <div class="pad-gears">
+      <button class="ctl gear" data-ctl="gup" aria-label="Vites yükselt">+</button>
+      <button class="ctl gear" data-ctl="gdn" aria-label="Vites düşür">−</button>
+    </div>
+  </div>
+  <div id="toast" role="status"></div>
+</div>
+
+<!-- ============ ANA MENÜ ============ -->
+<section id="menu" class="screen">
+  <div class="menu-wrap">
+    <div class="brand">
+      <div class="logo"><span class="l1">DRIFT</span><span class="l2">ŞEHRİ</span></div>
+      <p class="tag">Gece yarısı. Boş sokaklar. Yan yan.</p>
+    </div>
+    <nav class="menu-nav">
+      <button class="mbtn primary" data-act="free"><b>Serbest sürüş</b><small>Şehirde dolaş, kombo kur</small></button>
+      <button class="mbtn" data-act="tandem"><b>Tandem</b><small>Lideri yakından takip et</small></button>
+      <button class="mbtn" data-act="garage"><b>Garaj</b><small>Araç, boya, parça</small></button>
+      <button class="mbtn" data-act="settings"><b>Ayarlar</b><small>Kontrol, kamera, grafik</small></button>
+    </nav>
+    <div class="menu-foot">
+      <div class="chip"><span>Kasa</span><b id="m-money">₺0</b></div>
+      <div class="chip"><span>En iyi kombo</span><b id="m-best">0</b></div>
+      <div class="chip"><span>Araç</span><b id="m-car">HACHI</b></div>
+    </div>
+    <p class="keys-hint" id="keys-hint">Klavye: ← → direksiyon · ↑ gaz · ↓ fren/geri · Boşluk el freni · Shift debriyaj atma · Q/E vites · C kamera · R kurtar · P duraklat</p>
+  </div>
+</section>
+
+<!-- ============ GARAJ ============ -->
+<section id="garage" class="screen" hidden>
+  <header class="scr-head">
+    <button class="back" data-act="back" aria-label="Geri">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5 L8 12 L15 19" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <h2>Garaj</h2>
+    <div class="chip"><span>Kasa</span><b id="g-money">₺0</b></div>
+  </header>
+  <div class="garage-body">
+    <div class="preview">
+      <canvas id="g-preview" width="600" height="600" aria-label="Araç önizlemesi"></canvas>
+      <div class="pv-name"><b id="g-name">HACHI</b><span id="g-desc"></span></div>
+    </div>
+    <div class="panel">
+      <div class="tabs" role="tablist">
+        <button role="tab" class="tab on" data-tab="cars">Araçlar</button>
+        <button role="tab" class="tab" data-tab="paint">Boya</button>
+        <button role="tab" class="tab" data-tab="smoke">Duman</button>
+        <button role="tab" class="tab" data-tab="perf">Performans</button>
+      </div>
+      <div class="tab-body" id="tab-cars"></div>
+      <div class="tab-body" id="tab-paint" hidden></div>
+      <div class="tab-body" id="tab-smoke" hidden></div>
+      <div class="tab-body" id="tab-perf" hidden></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ AYARLAR ============ -->
+<section id="settings" class="screen" hidden>
+  <header class="scr-head">
+    <button class="back" data-act="back" aria-label="Geri">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5 L8 12 L15 19" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <h2>Ayarlar</h2>
+    <span></span>
+  </header>
+  <div class="set-body">
+    <div class="set-group">
+      <h3>Kontrol</h3>
+      <label class="row"><span>Direksiyon</span>
+        <select id="s-steer"><option value="buttons">Butonlar</option><option value="slider">Kaydırıcı</option><option value="tilt">Eğim (jiroskop)</option></select></label>
+      <label class="row"><span>Direksiyon hızı</span><input id="s-sens" type="range" min="0" max="1" step="0.05"></label>
+      <label class="row"><span>Drift yardımı <small>otomatik kontra + açı dengeleme</small></span><input id="s-assist" type="range" min="0" max="1" step="0.05"></label>
+      <label class="row"><span>Vites</span>
+        <select id="s-trans"><option value="auto">Otomatik</option><option value="manual">Manuel</option></select></label>
+    </div>
+    <div class="set-group">
+      <h3>Kamera ve ortam</h3>
+      <label class="row"><span>Kamera</span>
+        <select id="s-cam"><option value="chase">Takip (döner)</option><option value="north">Sabit (kuzey yukarı)</option></select></label>
+      <label class="row"><span>Yakınlık</span><input id="s-zoom" type="range" min="0.7" max="1.4" step="0.05"></label>
+      <label class="row"><span>Saat</span>
+        <select id="s-time"><option value="day">Gündüz</option><option value="sunset">Gün batımı</option><option value="night">Gece</option></select></label>
+      <label class="row"><span>Hava</span>
+        <select id="s-weather"><option value="clear">Açık</option><option value="rain">Yağmurlu (ıslak zemin)</option></select></label>
+    </div>
+    <div class="set-group">
+      <h3>Görüntü ve ses</h3>
+      <label class="row"><span>Grafik</span>
+        <select id="s-quality"><option value="0">Düşük</option><option value="1">Orta</option><option value="2">Yüksek</option></select></label>
+      <label class="row"><span>Ses</span><input id="s-sound" type="checkbox"></label>
+      <label class="row"><span>Ses düzeyi</span><input id="s-vol" type="range" min="0" max="1" step="0.05"></label>
+      <label class="row"><span>FPS göster</span><input id="s-fps" type="checkbox"></label>
+    </div>
+  </div>
+</section>
+
+<!-- ============ DURAKLAT ============ -->
+<section id="pause" class="screen overlay" hidden>
+  <div class="card">
+    <h2>Duraklatıldı</h2>
+    <div class="col">
+      <button class="mbtn primary" data-act="resume"><b>Devam et</b></button>
+      <button class="mbtn" data-act="respawn"><b>Yola dön</b><small>Aracı en yakın yola koy</small></button>
+      <button class="mbtn" data-act="garage"><b>Garaj</b></button>
+      <button class="mbtn" data-act="settings"><b>Ayarlar</b></button>
+      <button class="mbtn" data-act="menu"><b>Ana menü</b></button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TANDEM SONUÇ ============ -->
+<section id="result" class="screen overlay" hidden>
+  <div class="card">
+    <p class="eyebrow">Tandem sonucu</p>
+    <h2 id="r-title">Kazandın</h2>
+    <div class="r-score"><b id="r-score">0</b><span>/ 100</span></div>
+    <div class="r-bars">
+      <div class="r-bar"><span>Yakınlık</span><i><b id="r-prox"></b></i><em id="r-prox-n">0</em></div>
+      <div class="r-bar"><span>Açı uyumu</span><i><b id="r-ang"></b></i><em id="r-ang-n">0</em></div>
+      <div class="r-bar"><span>Çizgi</span><i><b id="r-line"></b></i><em id="r-line-n">0</em></div>
+    </div>
+    <p class="r-note" id="r-note"></p>
+    <div class="row-btns">
+      <button class="mbtn primary" data-act="tandem"><b>Tekrar</b></button>
+      <button class="mbtn" data-act="free"><b>Serbest sürüş</b></button>
+      <button class="mbtn" data-act="menu"><b>Ana menü</b></button>
+    </div>
+  </div>
+</section>
+
+<div id="fps" hidden></div>
+
+<script src="js/util.js"></script>
+<script src="js/data.js"></script>
+<script src="js/collide.js"></script>
+<script src="js/city.js"></script>
+<script src="js/car.js"></script>
+<script src="js/fx.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/input.js"></script>
+<script src="js/score.js"></script>
+<script src="js/tandem.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
