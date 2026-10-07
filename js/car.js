@@ -311,6 +311,8 @@
   // ================= ÇİZİM =================
   const PX = 26;
   const PARK_COLORS = ['#8a8f98', '#f2efe6', '#1b1d22', '#c8102e', '#1d4e9e', '#b5a27a', '#2f6f4f', '#7fd1ff'];
+  // açık dünya kaplamaları ('polis', 'taksi'): garaj listesinde (DS.LIVERIES) yoklar
+  const POLIS_WHITE = '#f4f6f8', POLIS_BLUE = '#1f4fa8', POLIS_BAND = 0.15;
 
   function bodyPath(g, L, W, sh) {
     const hl = L / 2, hw = W / 2;
@@ -336,7 +338,7 @@
     cache: new Map(),
 
     sprite(def, setup) {
-      const key = [def.id, setup.color, setup.livery, setup.wing ? 1 : 0].join('|');
+      const key = [def.id, setup.color, setup.livery, setup.wing ? 1 : 0, setup.bar ? 1 : 0, setup.sign ? 1 : 0].join('|');
       let s = this.cache.get(key);
       if (!s) {
         s = this.build(def, setup);
@@ -353,7 +355,9 @@
       g.scale(PX, PX);
       g.translate(mw / 2, mh / 2);
       const hl = L / 2, hw = W / 2;
-      const col = setup.color;
+      const lv = setup.livery;
+      // polis kaplaması her zaman beyaz gövde üstüne çizilir
+      const col = lv === 'polis' ? POLIS_WHITE : setup.color;
       const xW0 = hl - L * sh.hood, xW1 = xW0 - L * sh.wind, xR1 = xW1 - L * sh.roof, xB1 = xR1 - L * sh.rear;
       const cw = hw * sh.cabin, rw = cw * 0.86;
 
@@ -374,7 +378,6 @@
       g.fillStyle = lg; g.fillRect(-hl, -hw, L, W);
       // kaplamalar
       const cc = contrast(col);
-      const lv = setup.livery;
       if (lv === 'stripes') {
         g.fillStyle = cc;
         g.fillRect(-hl, -W * 0.17, L, W * 0.09);
@@ -409,6 +412,15 @@
           if (r() < 0.3) { g.beginPath(); g.arc(0, 0, h, 0, U.TAU); g.fill(); } else g.fillRect(-w / 2, -h / 2, w, h);
           g.restore();
         }
+      } else if (lv === 'polis') {
+        // iki yanda mavi bant (toplam genişliğin %30'u) ve siyah tamponlar
+        const bw = W * POLIS_BAND;
+        g.fillStyle = POLIS_BLUE;
+        g.fillRect(-hl - 0.1, -hw - 0.1, L + 0.2, bw + 0.1);
+        g.fillRect(-hl - 0.1, hw - bw, L + 0.2, bw + 0.1);
+        g.fillStyle = '#121418';
+        g.fillRect(hl - 0.13, -hw - 0.1, 0.25, W + 0.2);
+        g.fillRect(-hl - 0.12, -hw - 0.1, 0.25, W + 0.2);
       }
       g.restore();
 
@@ -431,6 +443,18 @@
       if (!sh.hatch) {
         g.strokeStyle = 'rgba(0,0,0,0.25)'; g.lineWidth = 0.03;
         g.beginPath(); g.moveTo(xB1 - 0.05, -cw * 0.95); g.lineTo(xB1 - 0.05, cw * 0.95); g.stroke();
+      }
+      if (lv === 'polis') {
+        // kaputta enine "POLİS" yazısı (yalnızca yapımda bir kez)
+        const mx = (xW0 + hl) / 2, maxW = W * (1 - 2 * POLIS_BAND) * 0.98;
+        let fs = Math.min((hl - xW0) * 0.5, W * 0.24);
+        g.save(); g.translate(mx, 0); g.rotate(Math.PI / 2);
+        g.font = `800 ${fs}px Arial, Helvetica, sans-serif`;
+        const tw = g.measureText('POLİS').width;
+        if (tw > maxW) { fs *= maxW / tw; g.font = `800 ${fs}px Arial, Helvetica, sans-serif`; }
+        g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = POLIS_BLUE;
+        g.fillText('POLİS', 0, 0);
+        g.restore();
       }
 
       // yan camlar
@@ -474,6 +498,33 @@
         g.fillText(def.num, 0, r * 0.06);
         g.restore();
       }
+      if (lv === 'taksi') {
+        // tavan kenarlarında siyah/beyaz dama şeridi
+        const n = Math.max(2, Math.round((xW1 - xR1) / 0.16)), st = (xW1 - xR1) / n, q = Math.min(0.16, rw * 0.3);
+        for (let i = 0; i < n; i++) {
+          g.fillStyle = i & 1 ? '#16181c' : '#f4f1ea';
+          g.fillRect(xR1 + i * st, -rw, st, q);
+          g.fillStyle = i & 1 ? '#f4f1ea' : '#16181c';
+          g.fillRect(xR1 + i * st, rw - q, st, q);
+        }
+      }
+      const rx = (xW1 + xR1) / 2;
+      if (setup.bar) {
+        // tavan çakar çubuğu (sönük hâli; yanıp sönen parlaklık ActorSprites.drawSirenBar'da)
+        g.fillStyle = '#15171b'; g.fillRect(rx - 0.175, -0.55, 0.35, 1.1);
+        g.globalAlpha = 0.55;
+        g.fillStyle = '#ff2a2a'; g.fillRect(rx - 0.135, -0.51, 0.27, 0.42);
+        g.fillStyle = '#2a6bff'; g.fillRect(rx - 0.135, 0.09, 0.27, 0.42);
+        g.globalAlpha = 0.9;
+        g.fillStyle = '#f4f6f8'; g.fillRect(rx - 0.09, -0.07, 0.18, 0.14);
+        g.globalAlpha = 1;
+      }
+      if (setup.sign) {
+        // taksi tavan lambası: sarı kenarlı beyaz kutu
+        g.fillStyle = '#ffc400'; g.fillRect(rx - 0.15, -0.4, 0.3, 0.8);
+        g.fillStyle = '#ffffff'; g.fillRect(rx - 0.11, -0.36, 0.22, 0.72);
+        g.fillStyle = '#16181c'; g.fillRect(rx - 0.02, -0.24, 0.04, 0.48);
+      }
       // arka cam
       glass(xR1, rw, xB1, cw * 0.95);
       // aynalar
@@ -516,6 +567,12 @@
       return { c, w: mw, h: mh };
     },
 
+    // Tavan ortasının araç ekseni üzerindeki konumu (m, ağırlık merkezinden öne +): çakar/taksi lambası
+    roofX(def) {
+      const L = def.len, sh = def.shape;
+      return L / 2 - L * (sh.hood + sh.wind + sh.roof / 2);
+    },
+
     wheel(ctx, x, y, ang, rim) {
       ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
       ctx.fillStyle = '#0c0c0e'; ctx.fillRect(-0.32, -0.13, 0.64, 0.26);
@@ -528,8 +585,10 @@
     drawCar(ctx, car) {
       const def = car.def, st = car.setup;
       // sprite'ı araçta önbelleğe al; kurulum değişince anahtar değişir
-      if (!car._spr || car._sprDef !== def || car._sprC !== st.color || car._sprL !== st.livery || car._sprW !== st.wing) {
+      if (!car._spr || car._sprDef !== def || car._sprC !== st.color || car._sprL !== st.livery || car._sprW !== st.wing ||
+        car._sprB !== st.bar || car._sprS !== st.sign) {
         car._spr = this.sprite(def, st); car._sprDef = def; car._sprC = st.color; car._sprL = st.livery; car._sprW = st.wing;
+        car._sprB = st.bar; car._sprS = st.sign;
       }
       const spr = car._spr;
       const tw = def.wid * 0.43;
