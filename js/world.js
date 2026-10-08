@@ -573,7 +573,7 @@
       return f;
     }
     _setFlags(inCar) {
-      this.inCar = inCar; this.onFoot = !inCar && this.state !== 'off';
+      this.inCar = inCar; this.onFoot = !inCar;
       this.W.inCar = inCar; this.W.onFoot = !inCar;
     }
     _snapCamera(x, y, onFoot) {
@@ -1133,6 +1133,8 @@
     _craneTarget() {
       const id = this._missionId(), pv = this.playerVeh;
       if (!id || !pv) return false;
+      const m = this.missions;
+      if (typeof m.craneTarget === 'function') { try { return !!m.craneTarget(pv); } catch (e) { this._err('missions.craneTarget', e); return false; } }
       const a = this.missions.active, type = a.def && a.def.type ? a.def.type : a.type;
       if (type && type !== 'steal') return false;
       if (pv.tag && pv.tag.mission === id) return true;
@@ -1147,7 +1149,6 @@
       car.vx = car.vy = car.w = 0;
       this.walker.reset(x, y, h);
       this._toFoot();
-      this.msg('Araç vince yüklendi', 'mis');
       this._mev('crane', info);
     }
 
@@ -1479,11 +1480,8 @@
     }
     onMissionEnd(r) {
       if (this.state === 'off' || !r) return;
-      if (r.pass) {
-        this.ow.stats.missions++;
-        if (this.police && this.police.stars > 0) { try { this.police.clear('mission'); } catch (e) { this._err('police.clear', e); } }
-      }
-      if (r.id === 'taxi' && r.pass) this.ow.stats.taxi++;
+      // istatistikleri (missions/taxi) görev modülü tutar; geçişte aranma temizlenir
+      if (r.pass && this.police && this.police.stars > 0) { try { this.police.clear('mission'); } catch (e) { this._err('police.clear', e); } }
       this._au('jingle', r.pass ? 'pass' : 'fail');
       this.autosave(true);
       if (DS.WorldUI && DS.WorldUI.showResult) this._ui('showResult', r);
@@ -1515,7 +1513,8 @@
     }
     _respect(crew) {
       const m = this.missions;
-      if (m && m.respect && typeof m.respect[crew] === 'number') return m.respect[crew];
+      if (m && m.respect && typeof m.respect === 'object' && typeof m.respect[crew] === 'number') return m.respect[crew];
+      if (m && typeof m.respect === 'function') { try { const v = m.respect(crew); if (typeof v === 'number') return v; } catch (e) { this._err('missions.respect', e); } }
       const ow = this.ow;
       return ow && ow.respect && typeof ow.respect[crew] === 'number' ? ow.respect[crew] : 0;
     }

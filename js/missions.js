@@ -241,17 +241,19 @@
       ow.stats.taxi = src.stats.taxi | 0;
       return ow;
     }
-    respect(crew) { return num(this.ow.respect[crew], 0); }
+    // canlı saygınlık nesnesi {kulup, sanayi, merkez} (polis Merkez ödül çarpanı için okur)
+    get respect() { return this.ow.respect; }
+    respectOf(crew) { return num(this.ow.respect[crew], 0); }
     _addRespect(crew, d) {
       if (!crew || !d) return;
-      this.ow.respect[crew] = U.clamp(this.respect(crew) + d, 0, 100);
+      this.ow.respect[crew] = U.clamp(this.respectOf(crew) + d, 0, 100);
     }
     _prog(id) {
       let e = this.ow.missions[id];
       if (!e) e = this.ow.missions[id] = { done: false, medal: 0, best: null, tries: 0 };
       return e;
     }
-    isLocked(def) { return !!def && def.tier > 0 && this.respect(def.crew) < GATE[def.tier]; }
+    isLocked(def) { return !!def && def.tier > 0 && this.respectOf(def.crew) < GATE[def.tier]; }
 
     // ---------------- etkileşim noktaları ----------------
     phoneAt(x, y, r) {
@@ -276,7 +278,7 @@
       const p = this.phones[phoneIdx];
       if (!p) return { phone: phoneIdx, crew: { id: '', name: 'Ankesörlü telefon', col: '#38d9ff', respect: 0 }, items: [] };
       const c = p.crew;
-      const crew = { id: c.id, name: c.name, col: c.col, respect: this.respect(c.id) };
+      const crew = { id: c.id, name: c.name, col: c.col, respect: this.respectOf(c.id) };
       const items = [];
       const m = p.mission;
       if (m) {
@@ -867,6 +869,23 @@
       }
     }
 
+    // hata ayıklama (debug.completeObjective): etkin görevi hemen geçir (drift/yarış bronz)
+    debugComplete() {
+      const a = this.active, W = this.W;
+      if (this.state !== 'run' || !a) return false;
+      switch (a.type) {
+        case 'drift': a.score = Math.max(a.score, a.def.medals[0]); this._finishDrift(a, W); break;
+        case 'race': a.runT = a.limit - 1; this._finishRace(a, W); break;
+        case 'steal': {
+          const pv = this._pv(W);
+          this.onEvent('crane', pv && this._inTarget(a, W) ? Object.assign({}, pv) : { def: a.vdef, tag: a.tag, hp: 1000, maxHp: 1000 });
+          break;
+        }
+        case 'taxi': if (a.step === 'ride') { a.tx = W.px; a.ty = W.py; } return true;
+        default: this._pass({ base: a.def.reward, note: 'Hedef tamamlandı.' });
+      }
+      return true;
+    }
     abort(reason) {
       if (this.state !== 'run' || !this.active) return;
       this._fail(reason || 'abort');

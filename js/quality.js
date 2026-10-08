@@ -13,6 +13,9 @@
       smoke: { max: 70, rMax: 3, aCut: 0.03, emit: 0.3, aMul: 1.35, budget: 1, layer: 0.5, layerAt: 0, light: false },
       sparks: 60, debris: 60, skidRes: 4, skidMax: 16, flood: 40, rainLines: 40, splashRate: 0, splashCap: 0,
       dtMax: 1 / 15, physCap: 8, gaugeHz: 20, miniHz: 10, textHz: 15, hudDpr: 1, audioHz: 20, oversample: 'none',
+      // açık şehir bütçeleri (SPEC §4.1)
+      traffic: 12, peds: 16, physCars: 4, copMax: 3, footCops: 2, aiHz: 8, carLights: 2, prerot: true, actorBudgetMs: 2,
+      spriteMB: 14, pedFrames: 4, pedAngles: 16, carVariants: 8, pedPalettes: 8, npcFx: false, blips: 6, zoomMin: 0.7, chevrons: false, dmgSmoke: 2,
     },
     {
       name: 'Düşük', dprCap: 1, scales: [0.6, 0.72, 0.85], maxPx: 1.0e6,
@@ -20,6 +23,8 @@
       smoke: { max: 140, rMax: 4.5, aCut: 0.025, emit: 0.5, aMul: 1.2, budget: 2, layer: 0.5, layerAt: 0, light: true },
       sparks: 120, debris: 100, skidRes: 6, skidMax: 24, flood: 40, rainLines: 70, splashRate: 30, splashCap: 120,
       dtMax: 1 / 20, physCap: 6, gaugeHz: 30, miniHz: 15, textHz: 20, hudDpr: 1, audioHz: 30, oversample: '2x',
+      traffic: 16, peds: 22, physCars: 5, copMax: 4, footCops: 3, aiHz: 10, carLights: 4, prerot: true, actorBudgetMs: 2,
+      spriteMB: 20, pedFrames: 4, pedAngles: 32, carVariants: 12, pedPalettes: 10, npcFx: false, blips: 8, zoomMin: 0.64, chevrons: true, dmgSmoke: 4,
     },
     {
       name: 'Orta', dprCap: 1.5, scales: [0.75, 0.87, 1.0], maxPx: 2.1e6,
@@ -27,6 +32,8 @@
       smoke: { max: 260, rMax: 6, aCut: 0.02, emit: 0.7, aMul: 1.1, budget: 3.5, layer: 0.5, layerAt: 1.5, light: true },
       sparks: 220, debris: 160, skidRes: 8, skidMax: 40, flood: 52, rainLines: 130, splashRate: 60, splashCap: 250,
       dtMax: 1 / 20, physCap: 6, gaugeHz: 30, miniHz: 30, textHz: 30, hudDpr: 1.5, audioHz: 30, oversample: '2x',
+      traffic: 22, peds: 32, physCars: 7, copMax: 5, footCops: 4, aiHz: 15, carLights: 6, prerot: false, actorBudgetMs: 1.5,
+      spriteMB: 32, pedFrames: 8, pedAngles: 32, carVariants: 18, pedPalettes: 14, npcFx: true, blips: 12, zoomMin: 0.58, chevrons: true, dmgSmoke: 6,
     },
     {
       name: 'Yüksek', dprCap: 2, scales: [0.9, 1.0], maxPx: 4.2e6,
@@ -34,6 +41,8 @@
       smoke: { max: 420, rMax: 8, aCut: 0.012, emit: 1, aMul: 1, budget: 8, layer: 0.5, layerAt: 5, light: true },
       sparks: 320, debris: 220, skidRes: 8, skidMax: 56, flood: 52, rainLines: 200, splashRate: 90, splashCap: 400,
       dtMax: 1 / 20, physCap: 6, gaugeHz: 60, miniHz: 30, textHz: 60, hudDpr: 2, audioHz: 60, oversample: '2x',
+      traffic: 30, peds: 44, physCars: 9, copMax: 6, footCops: 4, aiHz: 20, carLights: 10, prerot: false, actorBudgetMs: 1.5,
+      spriteMB: 48, pedFrames: 8, pedAngles: 32, carVariants: 18, pedPalettes: 16, npcFx: true, blips: 16, zoomMin: 0.55, chevrons: true, dmgSmoke: 8,
     },
   ];
 
@@ -62,6 +71,13 @@
     }
   }
 
+  // Yazılım çizimi sonucu bir kez hesaplanır (WebGL bağlamı kurmak pahalı); kalite ve dünya kullanır
+  let softMemo = null;
+  function isSoft() {
+    if (softMemo === null) softMemo = softwareRendering();
+    return softMemo;
+  }
+
   // Kaydedilmiş seviye yoksa donanıma göre başlangıç seviyesi
   function guessLevel(saved) {
     const hc = navigator.hardwareConcurrency || 4;
@@ -71,7 +87,7 @@
     if (hc <= 2 || dm <= 2) g = 1;
     const dpr = window.devicePixelRatio || 1;
     if (window.innerWidth * window.innerHeight * dpr * dpr > 3.5e6) g -= 1;
-    const soft = softwareRendering();
+    const soft = isSoft();
     if (soft) g = 0;
     g = U.clamp(g, 0, LADDER.length - 1);
     if (typeof saved === 'number' && saved >= 0) g = Math.min(saved, soft ? 5 : g + 2);
@@ -191,5 +207,5 @@
     }
   }
 
-  DS.Quality = { TIERS, LADDER, guessLevel, softwareRendering, AutoQuality };
+  DS.Quality = { TIERS, LADDER, guessLevel, softwareRendering, isSoft, AutoQuality };
 })();
