@@ -299,9 +299,10 @@
     // Oyuncu kornası (basılı tut): 350 + 440 Hz kare, alçak geçiren 1.4 kHz. Yalnız durum değişince iş yapar.
     horn(on) {
       on = !!on;
+      // init() öncesi durum saklanmaz: ilk gerçek basış sesi başlatsın
+      if (!this.ready) { this.hornOn = false; return; }
       if (on === this.hornOn) return;
       this.hornOn = on;
-      if (!this.ready) return;
       const t = this.ctx.currentTime;
       if (on) {
         if (!this.hornV) this._mkHorn();
