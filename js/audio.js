@@ -1,5 +1,7 @@
 'use strict';
 // WebAudio ile sentezlenen sesler: motor, turbo, lastik, rüzgâr, çarpışma, egzoz patlaması
+// Açık şehir (SPEC §2.6.10): siren, korna (oyuncu + NPC), ayak sesi, yumruk, para, kapı, patlama, jingle'lar,
+// oyuncu motor ses çarpanı. Tüm yeni yöntemler init()'ten önce de güvenle çağrılabilir (sessizce yok sayılır).
 (function () {
   const DS = window.DS, U = DS.U;
 
@@ -24,6 +26,9 @@
   class GameAudio {
     constructor() {
       this.ctx = null; this.on = true; this.vol = 0.8; this.ready = false; this._last = {}; this.hz = 60; this.os = '2x';
+      // açık şehir: motor ses çarpanı (yayayken 0), siren / korna durumu, NPC korna yuvaları
+      this.engVol = 1; this.sirenVol = 0; this.siren = null; this._sirTok = 0;
+      this.hornOn = false; this.hornV = null; this._hornTok = 0; this._hnEnd = [0, 0];
     }
 
     init() {
@@ -135,6 +140,10 @@
       for (const g of [this.tireA.g, this.tireB.g, this.wind.g, this.grass.g, this.scrape.g, this.sqG, this.tbG]) g.gain.setTargetAtTime(0, t, 0.05);
       if (this.eng) this.eng.out.gain.setTargetAtTime(0, t, 0.08);
       if (this.leng) this.leng.out.gain.setTargetAtTime(0, t, 0.08);
+      // siren ve korna da susar (bir sonraki setSiren/horn çağrısı yeniden açar)
+      this.sirenVol = 0; this.hornOn = false;
+      if (this.siren) { this.siren.g.gain.cancelScheduledValues(t); this.siren.g.gain.setTargetAtTime(0, t, 0.03); this._dropLater('siren'); }
+      if (this.hornV) { this.hornV.g.gain.cancelScheduledValues(t); this.hornV.g.gain.setTargetAtTime(0, t, 0.02); this._dropLater('horn'); }
     }
 
     engineParams(e, rpm, thr, redline, vol) {
@@ -157,7 +166,7 @@
       this._acc = 0;
       if (!this._last) this._last = {};
       const t = this.ctx.currentTime;
-      this.engineParams(this.eng, s.rpm, s.load, s.redline, 1);
+      this.engineParams(this.eng, s.rpm, s.load, s.redline, this.engVol);
       const slip = U.sat((s.slip - 1.5) / 9);
       const sp = U.sat(s.speed / 40);
       this.st(this.tireA.g.gain, slip * 0.24, 0.04, 'ta');
@@ -241,6 +250,204 @@
     chime() {
       if (!this.ready) return;
       [880, 1175, 1568].forEach((f, i) => setTimeout(() => this.beep(f, 0.12, 0.06), i * 70));
+    }
+
+    // ================= AÇIK ŞEHİR (SPEC §2.6.10) =================
+    // Oyuncu motor sesi çarpanı (yayayken 0). update() bir sonraki gönderimde uygular; 0 hemen susturur.
+    setEngineVol(v) {
+      v = v > 0 ? Math.min(1, v) : 0;
+      if (v === this.engVol) return;
+      this.engVol = v;
+      if (!this.ready || !this.eng) return;
+      if (v === 0) {
+        this.eng.out.gain.setTargetAtTime(0, this.ctx.currentTime, 0.06);
+        this._last[this.eng.id + 'g'] = 0;
+      } else delete this._last[this.eng.id + 'g'];
+    }
+
+    // Tek paylaşılan siren: iki kare dalga, 0.5 Hz LFO ile 600↔980 Hz; vol 0 = kapalı.
+    // Her kare çağrılabilir: değer yalnız anlamlı değişince gönderilir; uzun süre kapalı kalınca düğümler durur.
+    setSiren(vol) {
+      vol = vol > 0 ? Math.min(1, vol) : 0;
+      this.sirenVol = vol;
+      if (!this.ready) return;
+      if (vol > 0) {
+        if (!this.siren) this._mkSiren();
+        if (this._sirTok) { clearTimeout(this._sirTok); this._sirTok = 0; }
+      }
+      if (!this.siren) return;
+      this.st(this.siren.g.gain, vol * 0.07, 0.06, 'sir');
+      if (vol === 0) this._dropLater('siren');
+    }
+    _mkSiren() {
+      const c = this.ctx, t = c.currentTime;
+      const g = c.createGain(); g.gain.value = 0;
+      const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2600; lp.Q.value = 0.7;
+      const o1 = c.createOscillator(); o1.type = 'square'; o1.frequency.value = 790;
+      const o2 = c.createOscillator(); o2.type = 'square'; o2.frequency.value = 790; o2.detune.value = 9;
+      const g2 = c.createGain(); g2.gain.value = 0.55;
+      // LFO: üçgen 0.5 Hz, ±190 Hz -> 600..980 Hz (iki osilatörün frekansına eklenir)
+      const lfo = c.createOscillator(); lfo.type = 'triangle'; lfo.frequency.value = 0.5;
+      const lg = c.createGain(); lg.gain.value = 190;
+      lfo.connect(lg); lg.connect(o1.frequency); lg.connect(o2.frequency);
+      o1.connect(lp); o2.connect(g2); g2.connect(lp); lp.connect(g); g.connect(this.master);
+      o1.start(t); o2.start(t); lfo.start(t);
+      this.siren = { g, nodes: [o1, o2, lfo], out: g };
+      delete this._last.sir;
+    }
+
+    // Oyuncu kornası (basılı tut): 350 + 440 Hz kare, alçak geçiren 1.4 kHz. Yalnız durum değişince iş yapar.
+    horn(on) {
+      on = !!on;
+      if (on === this.hornOn) return;
+      this.hornOn = on;
+      if (!this.ready) return;
+      const t = this.ctx.currentTime;
+      if (on) {
+        if (!this.hornV) this._mkHorn();
+        if (this._hornTok) { clearTimeout(this._hornTok); this._hornTok = 0; }
+        this.hornV.g.gain.cancelScheduledValues(t);
+        this.hornV.g.gain.setTargetAtTime(0.085, t, 0.012);
+      } else if (this.hornV) {
+        this.hornV.g.gain.cancelScheduledValues(t);
+        this.hornV.g.gain.setTargetAtTime(0, t, 0.025);
+        this._dropLater('horn');
+      }
+    }
+    _mkHorn() {
+      const c = this.ctx, t = c.currentTime;
+      const g = c.createGain(); g.gain.value = 0;
+      const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1400; lp.Q.value = 0.9;
+      const o1 = c.createOscillator(); o1.type = 'square'; o1.frequency.value = 350;
+      const o2 = c.createOscillator(); o2.type = 'square'; o2.frequency.value = 440;
+      o1.connect(lp); o2.connect(lp); lp.connect(g); g.connect(this.master);
+      o1.start(t); o2.start(t);
+      this.hornV = { g, nodes: [o1, o2], out: g };
+    }
+    // kapalı kalan siren/korna düğümlerini bir süre sonra durdur (zayıf PC'de boşta osilatör çalışmasın)
+    _dropLater(which) {
+      const key = which === 'siren' ? '_sirTok' : '_hornTok';
+      if (this[key]) return;
+      this[key] = setTimeout(() => {
+        this[key] = 0;
+        const v = which === 'siren' ? this.siren : this.hornV;
+        if (!v) return;
+        if (which === 'siren' ? this.sirenVol > 0 : this.hornOn) return;
+        for (let i = 0; i < v.nodes.length; i++) { try { v.nodes[i].stop(); } catch (err) { /* yok */ } }
+        try { v.out.disconnect(); } catch (err) { /* yok */ }
+        if (which === 'siren') { this.siren = null; delete this._last.sir; } else this.hornV = null;
+      }, 1500);
+    }
+
+    // NPC kornası: tek seferlik 0.35 s, uzaklığa göre ses; aynı anda en fazla 2
+    hornNPC(dist) {
+      if (!this.ready) return;
+      const d = typeof dist === 'number' && dist > 0 ? dist : 0;
+      if (d > 140) return;
+      const c = this.ctx, t = c.currentTime, E = this._hnEnd;
+      const k = E[0] <= t ? 0 : E[1] <= t ? 1 : -1;
+      if (k < 0) return;
+      const dur = 0.35;
+      E[k] = t + dur + 0.05;
+      const vol = 0.07 / (1 + d / 18);
+      const base = 300 + Math.random() * 160;
+      const g = c.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(vol, t + 0.02);
+      g.gain.setValueAtTime(vol, t + dur - 0.06);
+      g.gain.linearRampToValueAtTime(0.0001, t + dur);
+      const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1100 + Math.max(0, 600 - d * 6); lp.Q.value = 0.8;
+      const o1 = c.createOscillator(); o1.type = 'square'; o1.frequency.value = base;
+      const o2 = c.createOscillator(); o2.type = 'square'; o2.frequency.value = base * 1.26;
+      o1.connect(lp); o2.connect(lp); lp.connect(g); g.connect(this.master);
+      o1.start(t); o2.start(t); o1.stop(t + dur + 0.02); o2.stop(t + dur + 0.02);
+    }
+
+    // ayak sesi: 0.04 s alçak geçiren gürültü patlaması (çok kısık)
+    step(run) {
+      if (!this.ready) return;
+      this._noise(0.04, 'lowpass', run ? 900 : 650, 0.7, run ? 0.045 : 0.028, 0.04);
+    }
+    // yumruk / itme: boğuk vuruş + kısa gürültü
+    punch() {
+      if (!this.ready) return;
+      this.thump(120, 0.12, 0.5);
+      this._noise(0.06, 'lowpass', 1500, 0.8, 0.25, 0.06);
+    }
+    // para: iki bip 1568 / 2093 Hz
+    cash() {
+      if (!this.ready) return;
+      this._tone(1568, 0.07, 0.06, 0, 'square');
+      this._tone(2093, 0.12, 0.06, 0.075, 'square');
+    }
+    // kapı: 0.05 s bant geçiren tık
+    door() {
+      if (!this.ready) return;
+      this._noise(0.05, 'bandpass', 1900, 2.5, 0.22, 0.05);
+      this.thump(220, 0.05, 0.12);
+    }
+    // patlama: 1.2 s alçak geçiren gürültü + 40 Hz vuruş; s: şiddet 0..1 (uzaklık zayıflatması çağıranda)
+    explosion(s) {
+      if (!this.ready) return;
+      const k = typeof s === 'number' ? U.clamp(s, 0, 1.5) : 1;
+      if (k < 0.02) return;
+      const fl = this._noise(1.2, 'lowpass', 900, 0.7, 0.85 * k, 1.2);
+      if (fl) fl.frequency.exponentialRampToValueAtTime(160, this.ctx.currentTime + 1.1);
+      this.thump(40, 0.7, 0.9 * k);
+      this._noise(0.12, 'bandpass', 2400, 1.2, 0.25 * k, 0.12);
+    }
+    // jingle: 'pass' yükselen 4 nota, 'fail' alçalan 3 nota, 'busted', 'wasted', 'star'
+    jingle(kind) {
+      if (!this.ready) return;
+      if (kind === 'pass') {
+        const F = [523, 659, 784, 1047];
+        for (let i = 0; i < 4; i++) this._tone(F[i], i === 3 ? 0.32 : 0.12, 0.07, i * 0.11, 'triangle');
+      } else if (kind === 'fail') {
+        const F = [494, 415, 330];
+        for (let i = 0; i < 3; i++) this._tone(F[i], i === 2 ? 0.4 : 0.16, 0.07, i * 0.18, 'square');
+      } else if (kind === 'busted') {
+        // iki tonlu düdük + alçalan kapanış
+        this._tone(988, 0.12, 0.06, 0, 'square');
+        this._tone(740, 0.12, 0.06, 0.14, 'square');
+        this._tone(988, 0.12, 0.06, 0.28, 'square');
+        this._tone(370, 0.45, 0.07, 0.44, 'square');
+      } else if (kind === 'wasted') {
+        // aşağı kayan karikatür "baygınlık" sesi
+        const c = this.ctx, t = c.currentTime;
+        const o = c.createOscillator(); o.type = 'sawtooth';
+        o.frequency.setValueAtTime(420, t); o.frequency.exponentialRampToValueAtTime(70, t + 1.0);
+        const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 900;
+        const g = c.createGain(); g.gain.setValueAtTime(0.09, t); g.gain.exponentialRampToValueAtTime(0.001, t + 1.1);
+        o.connect(lp); lp.connect(g); g.connect(this.master); o.start(t); o.stop(t + 1.15);
+      } else if (kind === 'star') {
+        this._tone(1175, 0.06, 0.05, 0, 'square');
+        this._tone(1568, 0.09, 0.05, 0.07, 'square');
+      }
+    }
+
+    // ---- yardımcılar (tek seferlik; olay başına birkaç düğüm, kare başına değil) ----
+    // gecikmeli (zamanlanmış) ton: setTimeout yok
+    _tone(f, dur, vol, delay, type) {
+      const c = this.ctx, t = c.currentTime + (delay || 0);
+      const o = c.createOscillator(); o.type = type || 'square'; o.frequency.value = f;
+      const g = c.createGain();
+      g.gain.setValueAtTime(0.0001, c.currentTime);
+      g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      o.connect(g); g.connect(this.master); o.start(t); o.stop(t + dur + 0.02);
+    }
+    // gürültü patlaması; ofset tampon (2 s) sonuna taşmaz
+    _noise(dur, type, f, q, gain, decay) {
+      const c = this.ctx, t = c.currentTime;
+      const src = c.createBufferSource(); src.buffer = this.noise;
+      src.playbackRate.value = 0.8 + Math.random() * 0.4;
+      const fl = c.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q;
+      const g = c.createGain();
+      g.gain.setValueAtTime(gain, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + (decay || dur));
+      src.connect(fl); fl.connect(g); g.connect(this.master);
+      const maxOff = Math.max(0, 1.9 - (dur + 0.05) * 1.25);
+      src.start(t, Math.random() * maxOff, dur + 0.05);
+      return fl;
     }
   }
   DS.GameAudio = GameAudio;

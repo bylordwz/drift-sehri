@@ -20,8 +20,10 @@
   const MINGAP = 0.4;        // sert sınır: öndeki engelle en az tampon aralığı (m)
   const STOP_OFF = 1.5;      // sanal durma lideri çizginin bu kadar ötesinde (s0 ile tampon çizgiye ~0.5 m kala durur)
   const DEC_PAD = 8;         // karar mesafesi = v²/2b + 8
-  const SIB_REAR = 10;       // aynı şeritten ayrılan kardeş bağlayıcıdaki araç, arkası bu kadar ilerleyene dek lider
+  const SIB_SEP = 3.0;       // kardeş bağlayıcıların ortak yolu: merkez çizgileri bu kadar ayrılana dek (m)
   const PASS_MAX = 2.8;      // sollama yanal kayması üst sınırı (m)
+  const PASS_WAIT = 4;       // engel arkasında bu kadar takılan araç geniş sollama sınırını kullanır (s)
+  const HW_BIG = 1.15, LEN_BIG = 6.6; // en geniş / en uzun araç (kamyon) yarı eni ve boyu
   const LAT_T = 1.5;         // yanal kayma süresi (smoothstep, s)
   const PULL_LAT = 1.4;      // siren: sağa çekilme (m)
   const YAW_MAX = 0.08;      // yanal kaymada en fazla görsel yönelme (rad)
@@ -89,6 +91,7 @@
       // ---- iç alanlar (yalnız Traffic) ----
       _li: -1, _ah: null, _bh: null, _len: 4.6, _wid: 1.8, _rad: 2.8, _vf: 1, _k: 0,
       _inb: 0, _inbL: -1, _relP: false, _ye: false, _dil: false, _imp: false, _waitR: false, _gw: 0, _wst: -1, _den: -1, _blk: 0, _pullLat: 0,
+      _ex: false, _exq: false,
       _acc: 0, _dl0: 0, _dlT: 0, _dlU: 1, _dlPrev: 0, _passRem: 0, _passTgt: 0, _ost: 0,
       _lk: 0, _lv: 0, _lgap: BIG, _lref: null, _loi: -1, _lpl: false,
       _statT: 0, _physT: 0, _rec: -1, _wreckT: 0, _invT: 0, _parkT: 0, _boostT: 0, _honkN: 0,
@@ -121,6 +124,11 @@
       this.claim = new Array(NN).fill(null);
       this.claimC = new Int32Array(NN).fill(-1);
       this.nAct = new Float32Array(NN);     // kavşakta son izin/bırakma zamanı (kavşak hizmet veriyor mu)
+      // özel (tüm kavşak) rezervasyon: yanal kaymış (sollayan / kenara çekilmiş) araç kutudan geçerken
+      // kaydırılmış yolu çatışma maskesinin dışında kalır; kutu boşken girer ve kimse yeni izin almaz
+      this.excl = new Uint8Array(NN);       // kavşak başına özel rezervasyon sayısı (0/1)
+      this.claimX = new Uint8Array(NN);     // sıra hakkı sahibi özel rezervasyon mu bekliyor
+      this.exWait = new Float32Array(NN).fill(-100); // kutudaki bir aracın özel rezervasyon istediği son an
       // düz yol şeritleri için yön kosinüs/sinüsü
       this.lc = new Float32Array(NL); this.ls = new Float32Array(NL);
       for (let l = 0; l < NL; l++) { this.lc[l] = Math.cos(this.lanes[l].h); this.ls[l] = Math.sin(this.lanes[l].h); }
@@ -131,11 +139,51 @@
         const L = this.lanes[l];
         if (L.seg >= 0) this.segL[L.seg * 4 + (L.dir > 0 ? 0 : 2) + (L.k ? 1 : 0)] = l;
       }
+      // yol şeridi başına solundaki / sağındaki en yakın komşu şerit merkezine yanal uzaklık (uzun bekleyişte
+      // geniş sollama sınırı: komşu şeridin ortasındaki araçlara değmeden kayılabilecek en büyük mesafe)
+      this.latL = new Float32Array(NL).fill(BIG); this.latR = new Float32Array(NL).fill(BIG);
+      for (let l = 0; l < (nav ? nav.nRoad : 0); l++) {
+        const L = this.lanes[l];
+        if (L.seg < 0) continue;
+        for (let k = 0; k < 4; k++) {
+          const ol = this.segL[L.seg * 4 + k];
+          if (ol < 0 || ol === l) continue;
+          const O = this.lanes[ol], pos = O.dir === L.dir ? O.d : -O.d;
+          if (pos < L.d) { if (L.d - pos < this.latL[l]) this.latL[l] = L.d - pos; }
+          else if (pos - L.d < this.latR[l]) this.latR[l] = pos - L.d;
+        }
+      }
       // şerit başına onu besleyen bağlayıcılar (yanal açıklık denetiminde girişe yaklaşanlar için)
       const fd = [];
       for (let l = 0; l < NL; l++) fd.push([]);
       for (let l = nav ? nav.nRoad : 0; l < NL; l++) fd[this.lanes[l].toLane].push(l);
       this.feed = fd.map((a) => new Int32Array(a));
+      // kardeş bağlayıcılar (aynı giriş şeridinden ayrılanlar) başta aynı yolu izler (göbekte ring boyunca uzun):
+      // her çift için ortak yol uzunluğu; kardeşteki araç, arkası bu uzunluğu geçene dek lider sayılır
+      this.sibC = []; this.sibS = [];
+      const qa = { x: 0, y: 0, h: 0, k: 0 }, qb = { x: 0, y: 0, h: 0, k: 0 };
+      for (let l = 0; l < NL; l++) { this.sibC.push(null); this.sibS.push(null); }
+      for (let l = 0; l < (nav ? nav.nRoad : 0); l++) {
+        const nx = this.lanes[l].next;
+        if (!nx || nx.length < 2) continue;
+        for (let a = 0; a < nx.length; a++) {
+          const A = this.lanes[nx[a]], ids = new Int32Array(nx.length - 1), sh = new Float32Array(nx.length - 1);
+          let m = 0;
+          for (let b = 0; b < nx.length; b++) {
+            if (b === a) continue;
+            const B = this.lanes[nx[b]], lim = Math.min(A.len, B.len);
+            let sv = 0;
+            while (sv < lim) {
+              nav.laneAt(A.id, sv, qa); nav.laneAt(B.id, sv, qb);
+              const dx = qa.x - qb.x, dy = qa.y - qb.y;
+              if (dx * dx + dy * dy > SIB_SEP * SIB_SEP) break;
+              sv += 0.5;
+            }
+            ids[m] = B.id; sh[m] = sv; m++;
+          }
+          this.sibC[A.id] = ids; this.sibS[A.id] = sh;
+        }
+      }
       this.sigNodes = [];
       if (nav) for (const n of nav.nodes) if (n.signal) this.sigNodes.push(n.id);
       this._sigVis = new Int16Array(Math.max(1, this.sigNodes.length));
@@ -195,6 +243,7 @@
       this.lHead.fill(null); this.lTail.fill(null);
       this.occ.fill(0); this.amask.fill(0); this.inb.fill(0);
       this.claim.fill(null); this.claimC.fill(-1); this.nAct.fill(-100);
+      this.excl.fill(0); this.claimX.fill(0); this.exWait.fill(-100);
       this.physN = 0;
       this.carFree.length = 0;
       for (let i = 0; i < this.cars.length; i++) this.carFree.push(this.cars[i]);
@@ -250,7 +299,8 @@
       veh.car = null; veh.ctrl = null; veh.settleT = 0; veh.recoverT = 0;
       veh.driver = true; veh.keep = false; veh.tag = null; veh.siren = false; veh.vis = false; veh.hitCD = 0; veh.ak = null;
       veh._ah = null; veh._bh = null; veh._k = 0; veh._inb = 0; veh._inbL = -1; veh._relP = false; veh._ye = false; veh._dil = false;
-      veh._imp = false; veh._waitR = false; veh._gw = 0; veh._wst = -1; veh._den = -1; veh._blk = 0; veh._pullLat = 0; veh._acc = 0; veh._dl0 = 0; veh._dlT = 0; veh._dlU = 1; veh._dlPrev = 0;
+      veh._imp = false; veh._waitR = false; veh._gw = 0; veh._wst = -1; veh._den = -1; veh._blk = 0; veh._pullLat = 0; veh._acc = 0;
+      veh._ex = false; veh._exq = false; veh._dl0 = 0; veh._dlT = 0; veh._dlU = 1; veh._dlPrev = 0;
       veh._passRem = 0; veh._passTgt = 0; veh._ost = 0; veh._lk = 0; veh._lv = 0; veh._lgap = BIG; veh._lref = null; veh._loi = -1; veh._lpl = false;
       veh._statT = 0; veh._physT = 0; veh._rec = -1; veh._wreckT = 0; veh._invT = 0; veh._parkT = 0; veh._boostT = 0; veh._honkN = 0;
       veh._hw = -3; veh._wallCD = 0; veh._d2 = 0; veh._dead = false;
@@ -357,6 +407,7 @@
       this.occ[cid]++;
       this.amask[Cn.node] = (this.amask[Cn.node] | (1 << Cn.bit)) >>> 0;
       veh.held = cid; veh.granted = true; veh._relP = false; veh._gw = 0; veh._den = -1;
+      if (veh._exq) { this.excl[Cn.node]++; veh._ex = true; veh._exq = false; }
       this.nAct[Cn.node] = this.t;
       const amt = veh._len + 3;
       this.inb[Cn.toLane] += amt; veh._inb = amt; veh._inbL = Cn.toLane;
@@ -370,6 +421,7 @@
         this.occ[cid]--;
         if (this.occ[cid] === 0) this.amask[Cn.node] = (this.amask[Cn.node] & ~(1 << Cn.bit)) >>> 0;
       }
+      if (veh._ex) { if (this.excl[Cn.node] > 0) this.excl[Cn.node]--; veh._ex = false; }
       this.nAct[Cn.node] = this.t;
       veh.held = -1; veh._relP = false;
     }
@@ -381,6 +433,17 @@
       veh._inbL = -1; veh._inb = 0;
     }
     _release(veh) { this._unhold(veh); this._uninb(veh); veh.granted = false; veh._dil = false; }
+    // tutulan bağlayıcının kavşağında özel rezervasyona yükselt: kavşakta başka bağlayıcı tutulmuyorsa
+    // (aynı bağlayıcıdaki arkadakiler sorun değil)
+    _tryEx(veh) {
+      if (veh._ex) return true;
+      const cid = veh.held;
+      if (cid < 0) return false;
+      const Cn = this.lanes[cid], nid = Cn.node;
+      if (this.excl[nid] > 0 || ((this.amask[nid] & ~(1 << Cn.bit)) >>> 0) !== 0) return false;
+      this.excl[nid]++; veh._ex = true;
+      return true;
+    }
 
     // kavşağa girme izni (SPEC §5.2 mayEnter). Dönüş: E_OK | E_LIGHT (ışık) | E_CONF (çatışma/öncelik) | E_EXIT (çıkış dolu)
     _mayEnter(veh, cid, dStop) {
@@ -395,17 +458,23 @@
         }
       }
       const cs = nd.conns, imp = veh._imp, conf = Cn.conf;
+      // yanal kaymış araç kutudan kaydırılmış yolla geçer: tüm kavşağa özel rezervasyon ister (kutu boş olmalı)
+      const ex = veh.dLat > 0.3 || veh.dLat < -0.3 || veh._dlT > 0.3 || veh._dlT < -0.3 || veh.pullT > 0 ||
+        (veh._passRem > 0 && veh._passRem + 8 > dStop);
+      veh._exq = ex;
+      // özel geçiş sürüyor ya da kutudaki bir araç özel rezervasyon bekliyor: yeni izin yok
+      if (this.excl[nid] > 0 || this.t - this.exWait[nid] < 0.5) return E_CONF;
       // sıra hakkı: daha uzun bekleyen başka bir baş araç çatışan bağlayıcıyı bekliyorsa yeni izin yok
       let mine = false;
       const cl = this.claim[nid];
       if (cl !== null) {
         if (cl === veh) mine = this.t - veh._wst >= CLAIM_T;
         else if (!this._claimOk(cl, nid)) this.claim[nid] = null;
-        else if (!imp && this.t - cl._wst >= CLAIM_T && (conf & (1 << lanes[this.claimC[nid]].bit)) !== 0 &&
+        else if (!imp && this.t - cl._wst >= CLAIM_T && (this.claimX[nid] !== 0 || ex || (conf & (1 << lanes[this.claimC[nid]].bit)) !== 0) &&
           !(veh._wst >= 0 && veh._wst <= cl._wst)) return E_CONF;
       }
       if (!imp) {
-        if ((conf & this.amask[nid]) !== 0) return E_CONF;
+        if (ex ? this.amask[nid] !== 0 : (conf & this.amask[nid]) !== 0) return E_CONF;
         // sinyalsiz kavşakta yan yol (rütbe 0) ana yoldan (rütbe 1) yaklaşanlara yol verir (sıra hakkı yoksa)
         if (!mine && !nd.signal && !nd.round && Cn.rank === 0) {
           for (let k = 0; k < cs.length; k++) {
@@ -421,7 +490,7 @@
         // sabırsız: rezervasyonları yok say, yalnız fiziksel olarak dolu çatışan bağlayıcıları bekle
         for (let k = 0; k < cs.length; k++) {
           const X = lanes[cs[k]];
-          if ((conf & (1 << X.bit)) !== 0 && this.lHead[X.id] !== null) return E_CONF;
+          if ((ex || (conf & (1 << X.bit)) !== 0) && this.lHead[X.id] !== null) return E_CONF;
         }
       }
       // çıkış alanı (yalnız raylı araçlar)
@@ -438,6 +507,14 @@
       if (L.conn || L.to !== nid) return false;
       const nd = this.nav.nodes[nid];
       return !nd.signal || this.nav.light(nid, L.phase, this.t) === 2;
+    }
+
+    // kardeş bağlayıcılar c1, c2'nin ortak yol uzunluğu (kardeş değilse 0)
+    _share(c1, c2) {
+      const ids = this.sibC[c1];
+      if (ids === null) return 0;
+      for (let k = 0; k < ids.length; k++) if (ids[k] === c2) return this.sibS[c1][k];
+      return 0;
     }
 
     // dönüş seçimi: S 0.6, R 0.25, L 0.15 (yeniden normalize); U yalnız tek seçenekse. Uzaktaki kavşakta
@@ -577,7 +654,8 @@
       car.speed = v; car.gear = 1;
       car.rpm = car.p.idle + (2000 * v) / Math.max(1, vmax);
       veh.car = car; veh.mode = PHYS;
-      veh.ctrl = veh.driver ? this.civCtrl : null;
+      // dışarıdan verilmiş denetleyici (ör. polisin copCtrl'ü) korunur
+      if (this._own(veh)) veh.ctrl = veh.driver ? this.civCtrl : null;
       veh.settleT = 0; veh.recoverT = 0; veh._physT = 0; veh._rec = -1;
       veh.dLat = 0; veh._passRem = 0; veh.pullT = 0; veh.conn = -1; veh.granted = false; veh._statT = 0;
       veh.px = veh.x; veh.py = veh.y; veh.ph = veh.h;
@@ -921,7 +999,7 @@
             const c = nx[k], t = this.lTail[c];
             if (t !== null) {
               const tr = t.s - t._len * 0.5;
-              if (c === veh.conn || tr < SIB_REAR) {
+              if (c === veh.conn || (veh.conn >= 0 && tr < this._share(veh.conn, c) + 1)) {
                 const g = rem + tr - hl;
                 if (g < gap) { gap = g; vl = t.v; lk = L_RAIL; lref = t; }
               }
@@ -943,7 +1021,7 @@
             while (t !== null && t.s <= veh.s) t = t._ah;
             if (t !== null) {
               const tr = t.s - t._len * 0.5;
-              if (tr < SIB_REAR) {
+              if (tr < this._share(veh.lane, c) + 1) {
                 const g = tr - veh.s - hl;
                 if (g < gap) { gap = g; vl = t.v; lk = L_RAIL; lref = t; }
               }
@@ -976,8 +1054,9 @@
               }
             }
             // izin alındıktan sonra önüne bir engel girdi ve durdu: rezervasyonu tutma
+            // (ya da hemen önünde duran engel var ve sollamıyor: kavşağı boşuna kilitlemesin)
             if (veh.granted) {
-              if (v < 0.3 && this._sg < dStop) { veh._gw += dt; if (veh._gw > 2) { this._release(veh); veh._gw = 0; } }
+              if (v < 0.3 && (this._sg < dStop || (this._sg < 3 && veh._passRem <= 0))) { veh._gw += dt; if (veh._gw > 2) { this._release(veh); veh._gw = 0; } }
               else veh._gw = 0;
             }
           } else if (ah === null && veh.held < 0 && !veh._relP && dStop <= dd && this._sg >= dStop &&
@@ -987,7 +1066,9 @@
             const b0 = veh._blk;
             veh._blk += dt;
             if (b0 <= 3 && veh._blk > 3) veh.conn = this._choose(veh.lane, veh.conn);
-          } else if (ah === null && veh.held < 0 && !veh._relP && dStop <= dd && this._sg >= dStop) {
+          } else if (ah === null && veh.held < 0 && !veh._relP && dStop <= dd && this._sg >= dStop &&
+            !(this._sg < 3 && this._sv < 0.3 && veh._passRem <= 0)) {
+            // (hemen önünde duran engel varken izin istemez: önce sollama kararı)
             if (!(this._sg < dStop + 5.1 + lanes[veh.conn].len + 8 && this._sv < 1)) veh._blk = 0;
             const e = this._mayEnter(veh, veh.conn, dStop), nid = L.to;
             veh._den = e;
@@ -1001,6 +1082,7 @@
               if (veh._wst < 0) veh._wst = this.t;
               const cl = this.claim[nid];
               if (cl === null || (cl !== veh && (cl._wst > veh._wst || !this._claimOk(cl, nid)))) { this.claim[nid] = veh; this.claimC[nid] = veh.conn; }
+              if (this.claim[nid] === veh) this.claimX[nid] = veh._exq ? 1 : 0;
             } else {
               if (e === E_LIGHT) veh._wst = -1;
               if (this.claim[nid] === veh) this.claim[nid] = null;
@@ -1087,6 +1169,12 @@
         veh._dlU += dt / LAT_T;
         if (veh._dlU > 1) veh._dlU = 1;
         veh.dLat = veh._dl0 + (veh._dlT - veh._dl0) * sm01(veh._dlU);
+      }
+      // özel rezervasyon artık gerekmiyor (kayma bitti): normale indir
+      if (veh._ex && veh._passRem <= 0 && veh.pullT <= 0 && veh.dLat < 0.3 && veh.dLat > -0.3 && veh._dlT < 0.3 && veh._dlT > -0.3) {
+        const Cn = this.lanes[veh.held];
+        if (this.excl[Cn.node] > 0) this.excl[Cn.node]--;
+        veh._ex = false;
       }
       // ---- 8. poz ----
       this._pose(veh, dt);
@@ -1177,36 +1265,73 @@
         if (pass > 0 && !changed) break;
       }
       if (!nearStill || near >= BIG) return;
-      // yol merkezine doğru (sola) kayma; 2.8 m'yi aşıyorsa ve yolda yer varsa bordür tarafından (sağdan) geç
-      let tgt;
-      if (req <= PASS_MAX) tgt = -(req < 0.3 ? 0.3 : req);
-      else {
-        if (L.conn) return;
-        const room = this.nav.segs[L.seg].w * 0.5 - L.d - hw - 0.3;
-        if (reqR > room || reqR > PASS_MAX) return; // sığmıyor: bekle (bekçi devreye girer)
-        tgt = reqR < 0.3 ? 0.3 : reqR;
-      }
+      // yol merkezine doğru (sola) kayma; 2.8 m'yi aşıyorsa ve yolda yer varsa bordür tarafından (sağdan) geç.
+      // Engelin arkasında PASS_WAIT s'den uzun bekleyen araç (yalnız yol şeridinde, sollama durma çizgisinden
+      // önce biterse) komşu şeridin ortasındaki en geniş araca değmeyecek kadar (latL/latR) kayabilir.
+      let limL = PASS_MAX, limR = 0;
       const rem = end + hl + 2;
+      if (!L.conn) {
+        limR = this.nav.segs[L.seg].w * 0.5 - L.d - hw - 0.3; // bordüre kadar yer
+        if (limR > PASS_MAX) limR = PASS_MAX;
+        if (veh.stuckT > PASS_WAIT && veh.s + rem + hl <= L.stopS) {
+          const need = hw + HW_BIG + 0.35 + YAW_MAX * 0.5 * (veh._len + LEN_BIG);
+          const xl = this.latL[L.id] - need, xr = this.latR[L.id] - need;
+          if (xl > limL) limL = xl;
+          if (xr > limR) limR = Math.min(xr, this.nav.segs[L.seg].w * 0.5 - L.d - hw - 0.3);
+        }
+      }
+      let tgt;
+      if (req <= limL) tgt = -(req < 0.3 ? 0.3 : req);
+      else if (reqR <= limR) tgt = reqR < 0.3 ? 0.3 : reqR;
+      else return; // sığmıyor: bekle (bekçi devreye girer)
       if (rem <= veh._passRem && Math.abs(tgt) <= Math.abs(veh._passTgt) + 1e-3 && tgt * veh._passTgt > 0) return; // zaten kapsanıyor
+      // kaydırılmış koridor sollama boyunca boş mu (ör. karşı şeritte duran araç, yolda yürüyen yaya, oyuncu)
+      for (let i = 0; i < n; i++) {
+        if (this.oRef[i] === veh) continue;
+        const ox = this.oX[i], oy = this.oY[i], dx = ox - x, dy = oy - y;
+        if (dx * dx + dy * dy > R2) continue;
+        const u = this._pathProj(veh, L, ox, oy);
+        if (u <= -hl || u > rem + hl + 4) continue;
+        let ow;
+        if (this.oK[i] === K_OBS) ow = this.oHL[i];
+        else { const dh = this.oH[i] - this._ph; ow = Math.abs(Math.sin(dh)) * this.oHL[i] + Math.abs(Math.cos(dh)) * this.oHW[i]; }
+        const dl = this._pl - tgt;
+        if (dl < hw + ow + 0.3 && dl > -(hw + ow + 0.3)) return;
+      }
       // karşı/yan şeritte aynı anda kayan (sollayan, kenara çekilen) araçla çakışma: bekle (kutu içinde
       // çatışan bağlayıcılar zaten maskeyle kapalı)
       const tp = rem / (veh.v > 3 ? veh.v : 3) + LAT_T;
-      if (!L.conn) { if (!this._latClear(veh, L, tgt, veh.s - hl - 2, veh.s + rem + hl, tp)) return; }
+      // geniş sollamada (|tgt| > 2.8, karşı/yan şeride taşar) o taraftaki şeritlerde menzilde araç olmamalı
+      if (!L.conn) { if (!this._latClear(veh, L, tgt, veh.s - hl - 2, veh.s + rem + hl, tp, tgt > PASS_MAX || tgt < -PASS_MAX)) return; }
       else {
         const off = L.len - veh.s; // bağlayıcıdan sonraki şeride taşan sollama: o parçayı denetle
         if (rem + hl > off && !this._latClear(veh, this.lanes[L.toLane], tgt, -off - hl - 2, rem - off + hl, tp)) return;
+      }
+      // kutuya taşan sollama: kaydırılmış yol çatışma maskelerinin dışında kalır; kavşağa özel rezervasyon gerekir
+      if (L.conn || (veh.conn >= 0 && veh.s + rem + hl + 3 > L.len)) {
+        if (!L.conn) {
+          const Cn = this.lanes[veh.conn], T = this.lanes[Cn.toLane];
+          // bordür tarafı: sağa dönüşte köşeyi kesmesin (≤ 1 m), çıkış şeridinde de bordüre yer olmalı
+          if (tgt > 0 && ((Cn.turn === 'R' && tgt > 1) || tgt > this.nav.segs[T.seg].w * 0.5 - T.d - hw - 0.3)) return;
+          // sollama çıkış şeridine de taşıyorsa o parçadaki şeritler
+          const o2 = L.len + Cn.len;
+          if (veh.s + rem + hl > o2 && !this._latClear(veh, T, tgt, veh.s - hl - 2 - o2, veh.s + rem + hl - o2, tp, false)) return;
+        }
+        if ((L.conn || veh.held >= 0) && !veh._imp && !this._tryEx(veh)) { this.exWait[L.conn ? L.node : L.to] = this.t; return; }
       }
       veh._passTgt = tgt;
       if (rem > veh._passRem) veh._passRem = rem;
     }
     // Aynı parçadaki diğer şeritlerde, [s0, s1] (bu şeridin s'i) boyunca, bu araç dLat = tgt'deyken yanal
     // olarak çakışacak (şimdiki ya da hedef kaymasıyla) raylı araç var mı. tp: karşıdan gelenlerin yaklaşma süresi.
-    _latClear(veh, L, tgt, s0, s1, tp) {
+    // strict: kayma tarafındaki şeritlerde menzildeki her araç (yanal uzaklığa bakılmaksızın) çakışma sayılır
+    _latClear(veh, L, tgt, s0, s1, tp, strict) {
       const base = L.seg * 4, my = L.d + tgt;
       for (let k = 0; k < 4; k++) {
         const ol = this.segL[base + k];
         if (ol < 0 || ol === L.id) continue;
         const O = this.lanes[ol], same = O.dir === L.dir, fd = this.feed[ol];
+        const side = strict === true && ((same ? O.d : -O.d) - L.d) * tgt > 0;
         // o şeritteki araçlar (f = -1) ve şeride giren bağlayıcılardakiler (s, şeridin başına göre negatif)
         for (let f = -1; f < fd.length; f++) {
           const cl = f < 0 ? ol : fd[f], sh = f < 0 ? 0 : this.lanes[cl].len;
@@ -1220,7 +1345,7 @@
             // şimdiki kayma, yumuşatma hedefi ve (bu karede verilmiş olabilecek) sollama/çekilme kararı
             const dt3 = r._passRem > 0 ? r._passTgt : r.pullT > 0 ? r._pullLat : r._dlT;
             const sg = same ? 1 : -1;
-            if (Math.abs(sg * (O.d + r.dLat) - my) < need || Math.abs(sg * (O.d + r._dlT) - my) < need ||
+            if (side || Math.abs(sg * (O.d + r.dLat) - my) < need || Math.abs(sg * (O.d + r._dlT) - my) < need ||
               Math.abs(sg * (O.d + dt3) - my) < need) return false;
           }
         }

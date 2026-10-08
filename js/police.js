@@ -42,7 +42,8 @@
   const ANG50 = (50 * PI) / 180;
 
   // suç tablosu: heat, min (en az ★), ped (yaya tanık olabilir), always (tanıksız da sayılır),
-  // vict (kurban polis tanıktır: yanında, ×2), maxS (bu yıldızın üstünde yok sayılır), cap (ısı tavanı)
+  // vict (kurban polis tanıktır: yanında, ×2), maxS (bu yıldızın üstünde yok sayılır), cap (ısı tavanı),
+  // fixed (tanığı polis modülü önceden doğruladı: ×1, ışın yok)
   const CRIMES = {
     STEAL_PARKED: { heat: 15, min: 0, ped: true },
     CARJACK: { heat: 30, min: 0, ped: true },
@@ -55,7 +56,7 @@
     STEAL_COP_CAR: { heat: 150, min: 2, always: true },
     WRECK_CAR: { heat: 120, min: 0 },
     TAKEDOWN: { heat: 80, min: 0, always: true, maxS: 1 },
-    RECKLESS: { heat: 8, min: 0, cap: 60 },
+    RECKLESS: { heat: 8, min: 0, cap: 60, fixed: true },
     PROPERTY: { heat: 5, min: 0, cap: 60 },
   };
 
@@ -79,6 +80,7 @@
       stuckT: 0, revT: 0, revS: 1, backT: 0, slot: -1, wantBox: false,
       foot: -1, waitT: 0, leaveT: 0, disT: 0, offT: 0, pullT: 0,
       lane: -1, ls: 0, baseTorque: 0, lastThr: 0, lastSteer: 0, sees: false, idx: 0, far: 0,
+      wnd: false, wnx: -1, fver: -1, dirT: 0, direct: false, capV: INF, blkT: 0, revCD: 0, revN: 0, revAt: -99,
     };
   }
 
@@ -100,7 +102,9 @@
       this._bustFired = false;
       this._spawnT = 0; this._footSpawnT = 0; this._reckT = 0; this._reckLaneT = 0; this._vmaxHere = 11;
       this._flowT = 0; this._fNode = -1; this._fAvoid = false; this._fVer = 0;
-      this._gx = 0; this._gy = 0; this._sirenLvl = 0; this._perkT = 0; this._perk = 1;
+      this._gx = 0; this._gy = 0; this._sirenLvl = 0; this._perkT = 0; this._perk = 1; this._idxSeq = 0;
+      // hedef parçası (son yaklaşım): parça id, eksen izdüşümü
+      this._gSeg = -1; this._gpx = 0; this._gpy = 0;
       // görüş önbelleği: araç kayıtları havuz indeksine göre
       this._vSee = new Uint8Array(64); this._vNext = new Float32Array(64); this._vChk = new Float32Array(64); this._vMark = new Int32Array(64);
       // yaya polisler uid'ye göre (küçük tablo)
@@ -120,6 +124,7 @@
       // drift parkı kapıları (park dışında, yol üzerinde)
       this._gates = new Float32Array(12); this._nGates = 0;
       this._initGates();
+      this._segOff = null; this._initSegs();
       // geçici nesneler
       this._o = { lane: -1, s: 0, x: 0, y: 0, h: 0, k: 0, d: 0, seg: -1, nA: -1, nB: -1, t: 0 };
       this._o2 = { lane: -1, s: 0, x: 0, y: 0, h: 0, k: 0, d: 0 };
@@ -168,6 +173,7 @@
       if (c.maxS !== undefined && this.stars > c.maxS) return 0;   // ≥2★: polise çarpma / takedown ısı eklemez
       let mult = 0;
       if (c.vict) mult = 2;                                          // kurban polis hep tanık (yanında)
+      else if (c.fixed) mult = 1;
       else {
         mult = this._copWitness(x, y, W.onFoot ? VIS_FOOT : VIS_CAR);
         if (mult === 0 && c.always) mult = 1;
@@ -181,7 +187,7 @@
         this._apply();
         return this.heat - old;
       }
-      if (c.ped && this._pedWitness(x, y) && Math.random() < 0.5 && this._nRep < 8) {
+      if (c.ped && this._pedWitness(x, y, typeof victim === 'number' ? victim : -1) && Math.random() < 0.5 && this._nRep < 8) {
         const k = this._nRep++;
         this._rT[k] = PED_REP_T; this._rV[k] = c.heat * 0.5; this._rX[k] = x; this._rY[k] = y;
       }
@@ -208,7 +214,7 @@
     clear(reason) {
       const old = this.stars;
       this.heat = 0; this.stars = 0; this.bounty = 0; this.takedowns = 0; this.bust = 0; this._bustFired = false;
-      this.unseenT = 0; this._nRep = 0; this.flash = false; this.searchR = 60;
+      this.unseenT = 0; this._nRep = 0; this.flash = false; this.searchR = 60; this._reckT = 0;
       this._allLeave();
       this.lastClear = reason || 'debug';
       if (old !== 0) this._emitStars(old, 0);
@@ -264,6 +270,61 @@
       const NN = this.nav.nodes.length;
       this._fNext = new Int16Array(NN).fill(-1); this._fDist = new Float32Array(NN).fill(INF);
       this._initGates();
+      this._initSegs();
+    }
+    // parça başına rota yanal ofseti: sokakta (2 şerit) eksenin 1.2 m sağı — sağ şeritteki ve karşı şeritteki
+    // trafiğin arasından geçer; cadde/çevre yolunda (≥ 20 m, 4 şerit) eksenin üstü (iç şeritlerin arası)
+    _initSegs() {
+      const nav = this.nav;
+      if (!nav) { this._segOff = null; return; }
+      const n = nav.segs.length;
+      this._segOff = new Float32Array(n);
+      for (let k = 0; k < n; k++) this._segOff[k] = nav.segs[k].w >= 20 ? 0 : ROUTE_OFF;
+    }
+    // iki kavşağı bağlayan parça (-1 yok)
+    _segOf(a, b) {
+      if (a < 0 || b < 0) return -1;
+      const nav = this.nav, L = nav.nodes[a].legs;
+      for (let k = 0; k < 4; k++) {
+        const sid = L[k];
+        if (sid < 0) continue;
+        const sg = nav.segs[sid];
+        if ((sg.A === a && sg.B === b) || (sg.A === b && sg.B === a)) return sid;
+      }
+      return -1;
+    }
+    _off(sid) { return sid >= 0 && this._segOff !== null ? this._segOff[sid] : ROUTE_OFF; }
+    // nokta (r yarıçaplı) ızgarada engelsiz mi (bit 2: bina/duvar/park aracı/ağaç)
+    _freePt(x, y, r) {
+      const nav = this.nav;
+      if (!nav) return true;
+      const g = nav.grid, GW = nav.GW, GH = nav.GH;
+      for (let k = 0; k < 5; k++) {
+        const px = k === 1 ? x + r : k === 2 ? x - r : x, py = k === 3 ? y + r : k === 4 ? y - r : y;
+        if (!(px >= 0 && py >= 0 && px < GW && py < GH)) return false;
+        if (g[(py | 0) * GW + (px | 0)] & 2) return false;
+      }
+      return true;
+    }
+    // düz sürüş yolu engelsiz mi: merkez ve ±0.9 m yan çizgiler 1.5 m arayla (son 2 m hariç);
+    // drift parkı sınırını kesen yol kapalı sayılır (ince bariyerler ızgarada yok)
+    _clearPath(x0, y0, x1, y1) {
+      const nav = this.nav, c = this.city;
+      if (!nav) return true;
+      if (c && c.drift && c.inDrift(x0, y0, 0) !== c.inDrift(x1, y1, 0)) return false;
+      const dx = x1 - x0, dy = y1 - y0, L = Math.sqrt(dx * dx + dy * dy);
+      if (L < 2.5) return true;
+      const ux = dx / L, uy = dy / L, g = nav.grid, GW = nav.GW, GH = nav.GH;
+      const n = Math.ceil((L - 2) / 1.5);
+      for (let i = 1; i <= n; i++) {
+        const t = Math.min(L - 2, i * 1.5), cx = x0 + ux * t, cy = y0 + uy * t;
+        for (let k = -1; k <= 1; k++) {
+          const px = cx - uy * 0.9 * k, py = cy + ux * 0.9 * k;
+          if (!(px >= 0 && py >= 0 && px < GW && py < GH)) return false;
+          if (g[(py | 0) * GW + (px | 0)] & 2) return false;
+        }
+      }
+      return true;
     }
 
     _initGates() {
@@ -328,7 +389,8 @@
       this.stars = 0; this.heat = 0; this.unseenT = 0; this.takedowns = 0; this.bounty = 0; this.bust = 0; this._bustFired = false;
       this.searchR = 60;
       this._allLeave();
-      this._msg('KAÇTIN!', 'big', b > 0 ? 'KOVALAMACA ÖDÜLÜ' : '');
+      // ödül mesajı dünyadan (onEscape -> reward(b, 'KOVALAMACA ÖDÜLÜ'))
+      this._msg('KAÇTIN!', 'big', 'Polis aramayı bıraktı');
       if (old !== 0) this._emitStars(old, 0);
       const wo = W ? W.world : null;
       if (wo && wo.onEscape) wo.onEscape(b);
@@ -352,7 +414,12 @@
         if (this.takedowns >= s) this._loseStar(true);
         else this._msg('POLİS DEVRE DIŞI!', 'cop', 'Devre dışı ' + this.takedowns + '/' + s);
       } else if (byPlayer) {
+        // ≤1★: takedown bir suçtur (80 ısı, hep tanıklı) ve kovalamacanın takedown sayacına eklenir
         this.crime('TAKEDOWN', veh.x, veh.y, veh);
+        if (this.stars > 0) {
+          this.takedowns++;
+          this.bounty = Math.min(BOUNTY_CAP, this.bounty + 150 * this.stars * this._perk);
+        }
         this._msg('POLİS DEVRE DIŞI!', 'cop', '');
       }
     }
@@ -394,7 +461,9 @@
       st.tx = 0; st.ty = 0; st.vdes = 0; st.arrive = false; st.stopD = 0; st.cx = 0; st.cy = 0; st.cv = INF; st.cr = 0;
       st.stuckT = 0; st.revT = 0; st.revS = 1; st.backT = 0; st.slot = -1; st.wantBox = false; st.foot = -1; st.waitT = 0;
       st.leaveT = 0; st.disT = 0; st.offT = 0; st.pullT = Math.random() * 0.5; st.lane = -1; st.ls = 0; st.baseTorque = 0;
-      st.lastThr = 0; st.lastSteer = 0; st.sees = false; st.idx = 0; st.far = 0;
+      st.lastThr = 0; st.lastSteer = 0; st.sees = false; st.idx = this._idxSeq++; st.far = 0;
+      st.wnd = false; st.wnx = -1; st.fver = -1; st.dirT = 0; st.direct = false; st.capV = INF; st.blkT = 0; st.revCD = 0;
+      st.revN = 0; st.revAt = -99;
       return st;
     }
     // bir kaydı polis birimi yap (terfi ya da yeni doğan)
@@ -558,12 +627,12 @@
       for (let k = 0; k < P.length; k++) if (P[k] === uid) return k;
       return -1;
     }
-    // suç yerine 25 m içinde (yerde olmayan) sivil yaya var mı
-    _pedWitness(x, y) {
+    // suç yerine 25 m içinde (yerde olmayan) sivil yaya var mı (kurban yaya sayılmaz)
+    _pedWitness(x, y, victim) {
       const pd = this.W ? this.W.peds : null;
       if (!pd) return false;
       for (let i = 0; i < pd.n; i++) {
-        if (pd.role[i] === PR.COP) continue;
+        if (i === victim || pd.role[i] === PR.COP) continue;
         const s = pd.st[i];
         if (s === PS.DOWN || s === PS.FALL || s === PS.GONE) continue;
         const dx = pd.x[i] - x, dy = pd.y[i] - y;
@@ -586,7 +655,7 @@
         this.lkpX = W.px; this.lkpY = W.py;
         this.bounty = Math.min(BOUNTY_CAP, this.bounty + 20 * s * dt * this._perk);
       } else {
-        const hide = this.nav ? this.nav.hideZone(W.px, W.py) : !!W.hidden;
+        const hide = W.hidden === true || (this.nav !== null && this.nav.hideZone(W.px, W.py));
         this.unseenT += dt * (hide ? 2 : 1);
         if (s === 1) {
           if (this.unseenT >= LOSE_T[1]) this._escape();
@@ -666,12 +735,24 @@
           else if (st.leaveT > 90) this._despawnCop(i);
           continue;
         }
+        // çok uzakta kalmış birim: görünmezse bırak, gerekirse yakında yenisi doğar
+        if (!v.vis && d > vr + 400) { this._despawnCop(i); continue; }
         active++;
-        // fazla birim (yıldız düştü / kalite): en uzaktaki çekilir
-        if (active > want) { st.leave = true; st.leaveT = 0; st.lane = -1; st.mode = M_LEAVE; v.siren = false; active--; continue; }
-        // çok uzakta kalmış gereken birim: görünmezse bırak, yakında yenisi doğar
-        if (!v.vis && d > vr + 400) { this._despawnCop(i); active--; continue; }
         v.siren = s > 0;
+      }
+      // fazla birim (yıldız düştü / kalite düştü): en uzaktakiler çekilir
+      while (active > want) {
+        let fi = -1, fd = -1;
+        for (let i = 0; i < this.cops.length; i++) {
+          const st = this.cops[i].tag;
+          if (st.disabled || st.leave) continue;
+          if (st.far > fd) { fd = st.far; fi = i; }
+        }
+        if (fi < 0) break;
+        const v = this.cops[fi], st = v.tag;
+        st.leave = true; st.leaveT = 0; st.lane = -1; st.mode = M_LEAVE; v.siren = false;
+        if (st.foot >= 0) this._footBack(st);
+        active--;
       }
       if (active >= want || s === 0) return;
       this._spawnT -= dt;
@@ -761,7 +842,16 @@
       const o = this._o2;
       if (this._gateFor(gx, gy, o)) { gx = o.x; gy = o.y; }
       this._gx = gx; this._gy = gy;
-      const tn = this.nav.nodeNear(gx, gy), avoid = this.stars <= 2;
+      // hedef parçası: hedefin en yakın parça ekseni; akış hedefi o parçanın hedefe yakın ucu
+      let tn = -1;
+      const q = this._o;
+      if (this.nav.snap(gx, gy, q)) {
+        this._gSeg = q.seg; this._gpx = q.x; this._gpy = q.y;
+        const A = this.nav.nodes[q.nA], B = this.nav.nodes[q.nB];
+        tn = A.dead ? q.nB : B.dead ? q.nA : q.t < 0.5 ? q.nA : q.nB;
+      } else this._gSeg = -1;
+      if (tn < 0) tn = this.nav.nodeNear(gx, gy);
+      const avoid = this.stars <= 2;
       if (tn !== this._fNode || avoid !== this._fAvoid) {
         this.nav.flowTo(tn, this._fNext, this._fDist, avoid);
         this._fNode = tn; this._fAvoid = avoid; this._fVer++;
@@ -786,7 +876,7 @@
       for (let k = 0; k < 4; k++) {
         SX[k] = W.px + c * SLOT_X[k] - s * SLOT_Y[k];
         SY[k] = W.py + s * SLOT_X[k] + c * SLOT_Y[k];
-        used[k] = 0;
+        used[k] = this._freePt(SX[k], SY[k], 1.3) ? 0 : 1; // duvar/bina/park aracı içindeki yuva kullanılmaz
       }
       const n = Math.min(nb, 4);
       for (let a = 0; a < n; a++) {
@@ -829,17 +919,21 @@
         if (st.offT > 1.5 && tr) { tr.toParked(veh); veh.ctrl = null; }
         return;
       }
-      if (st.leave) { this._leaveDrive(veh, st, W, dt); this._stuck(veh, st, dt); return; }
       const px = W.px, py = W.py, pvx = W.pvx || 0, pvy = W.pvy || 0, psp = W.pspeed || 0;
+      // yaya polisi dışarıda: kovalarken (oyuncu yayada / duruyor) bekle; oyuncu kaçtıysa ya da birim
+      // çekiliyorsa polisin araca dönmesini bir süre bekle, sonra onu bırakıp devam et
+      if (st.foot >= 0) {
+        if (st.leave) { if (st.leaveT < 8) { this._hold(st, car); return; } this._orphanFoot(st); }
+        else if (W.onFoot || psp < 4) { st.waitT = 0; this._hold(st, car); return; }
+        else { st.waitT += dt; if (st.waitT < 4) { this._hold(st, car); return; } this._orphanFoot(st); }
+      }
+      if (st.leave) { st.capV = INF; this._leaveDrive(veh, st, W, dt); this._stuck(veh, st, dt); return; }
       const d = st.far, o = this._o2;
       const vRoute = 14 + 3 * s;
-      // yaya polisi dışarıdaysa ve oyuncu durmuşsa bekle
-      if (st.foot >= 0 && (W.onFoot || psp < 4)) {
-        st.mode = M_STOP; st.vdes = 0; st.tx = car.x + Math.cos(car.h) * 10; st.ty = car.y + Math.sin(car.h) * 10; st.arrive = true;
-        st.waitT = 0;
-        return;
-      }
-      if (st.foot >= 0) { st.waitT += dt; if (st.waitT > 4) this._orphanFoot(st); }
+      // doğrudan yol (görüş + engelsiz düz çizgi) 4 Hz'de yenilenir
+      st.dirT -= dt;
+      if (st.dirT <= 0) { st.dirT = 0.25 + (st.idx & 3) * 0.01; st.direct = st.sees && d < 60 && this._clearPath(car.x, car.y, px, py); }
+      let avoidPlayer = true;
       if (W.onFoot) {
         if ((st.sees && d < 45) || d < 20) {
           // yayaya 8 m kala dur
@@ -847,23 +941,25 @@
           const ux = d > 0.1 ? (px - car.x) / d : Math.cos(car.h), uy = d > 0.1 ? (py - car.y) / d : Math.sin(car.h);
           st.tx = px - ux * 8; st.ty = py - uy * 8;
           if (this._gateFor(px, py, o)) { st.tx = o.x; st.ty = o.y; st.mode = M_GATE; }
-          st.vdes = 14; st.arrive = true; st.stopD = 0.8;
+          else if (!st.direct && d > 14) this._route(veh, st, W, vRoute);
+          if (st.mode === M_STOP || st.mode === M_GATE) { st.vdes = 14; st.arrive = true; st.stopD = 0.8; }
         } else this._route(veh, st, W, vRoute);
       } else if (st.slot >= 0) {
         st.mode = M_BOX;
         st.tx = this._boxSlotX[st.slot]; st.ty = this._boxSlotY[st.slot];
         if (this._gateFor(st.tx, st.ty, o)) { st.tx = o.x; st.ty = o.y; st.mode = M_GATE; }
-        st.vdes = 12; st.arrive = true; st.stopD = 0.8;
+        else if (!st.direct && d > 16) this._route(veh, st, W, vRoute);
+        if (st.mode === M_BOX || st.mode === M_GATE) { st.vdes = 12; st.arrive = true; st.stopD = 0.8; }
       } else if (s >= 2 && st.sees && d < 15 && !this._inGateZone(px, py)) {
         // ÇARP: oyuncunun arka ortasına, oyuncu hızı + 4
-        st.mode = M_RAM;
+        st.mode = M_RAM; avoidPlayer = false;
         const c = Math.cos(W.ph || 0), sn = Math.sin(W.ph || 0), hl = W.car && W.car.p ? W.car.p.len * 0.5 : 2.3;
         st.tx = px - c * hl + pvx * 0.2; st.ty = py - sn * hl + pvy * 0.2;
         st.vdes = st.backT > 0 ? Math.max(0, psp - 3) : psp + 4;
         // temas: geri çekil 1.5 s
         const rr = (car.p.len + 2 * hl) * 0.5 + 0.4;
         if (st.backT <= 0 && d < rr) st.backT = 1.5;
-      } else if (st.sees && d < 60) {
+      } else if (st.direct) {
         // saf takip: öngörülen konum (+ yan kayma, sıraya dizilmesinler)
         st.mode = M_CHASE;
         const tp = Math.min((d / Math.max(car.speed, 1)), 1.5);
@@ -873,33 +969,98 @@
         st.tx = tx; st.ty = ty; st.vdes = 45;
         if (this._gateFor(tx, ty, o)) { st.tx = o.x; st.ty = o.y; st.mode = M_GATE; st.arrive = true; st.stopD = 1; st.vdes = 14; }
       } else this._route(veh, st, W, vRoute);
+      this._ahead(veh, st, W, avoidPlayer);
       this._stuck(veh, st, dt);
+    }
+    // olduğu yerde dur (el freni)
+    _hold(st, car) {
+      st.mode = M_STOP; st.vdes = 0; st.arrive = true; st.stopD = 0;
+      st.tx = car.x + Math.cos(car.h) * 10; st.ty = car.y + Math.sin(car.h) * 10;
+      st.stuckT = 0;
     }
     _inGateZone(x, y) { return this.stars <= 2 && !!this.city && this.city.inDrift(x, y, 1); }
 
     // sıkışma: v < 1, gaz verilirken 2 s -> 1.2 s ters direksiyonla geri
+    // geçilemeyen duran engelin arkasında 3.5 s bekleme de sıkışma sayılır
     _stuck(veh, st, dt) {
       const car = veh.car;
-      if (st.revT > 0) { st.stuckT = 0; return; }
+      if (st.revT > 0) { st.stuckT = 0; st.blkT = 0; return; }
       if (car.speed < 1 && st.lastThr > 0.2 && st.vdes > 2) st.stuckT += dt;
       else st.stuckT = Math.max(0, st.stuckT - dt * 2);
-      if (st.stuckT > 2) {
-        st.stuckT = 0; st.revT = 1.2;
+      if (car.speed < 1 && st.capV < 1 && st.vdes > 2 && !st.arrive) st.blkT += dt; else st.blkT = 0;
+      if (st.stuckT > 2 || st.blkT > 3.5) {
+        // art arda sıkışma (10 s içinde): daha uzun geri manevra, yön dönüşümlü
+        st.revN = this._t - st.revAt < 10 ? st.revN + 1 : 0;
+        st.revAt = this._t;
+        st.stuckT = 0; st.blkT = 0; st.revT = 1.2 + 0.6 * Math.min(st.revN, 2);
         st.revS = st.lastSteer > 0.05 ? -1 : st.lastSteer < -0.05 ? 1 : Math.random() < 0.5 ? -1 : 1;
+        if (st.revN & 1) st.revS = -st.revS;
         st.node = -1; // geri çıkınca rotayı yeniden kur
       }
     }
 
+    // önündeki araçlar: hız sınırı (takip) ve duran engelin yanından geçiş hedefi.
+    // avoidPlayer: oyuncu aracı da engeldir (ÇARP kipinde değil)
+    _ahead(veh, st, W, avoidPlayer) {
+      const car = veh.car, list = W.traffic.list;
+      const c = Math.cos(car.h), s = Math.sin(car.h), v = car.speed, hw = car.p.wid * 0.5, hl = car.p.len * 0.5;
+      const look = 6 + (v * v) / 14, R = look + 8, R2 = R * R;
+      let best = INF, bx = 0, by = 0, bLy = 0, bW = 0, bL = 0, bV = 0;
+      for (let k = 0; k <= list.length; k++) {
+        let ox, oy, oh, ol, ow, ov;
+        if (k < list.length) {
+          const r = list[k];
+          if (r === veh || r.alive !== true) continue;
+          ox = r.x; oy = r.y; oh = r.h; ol = r.p.len; ow = r.p.wid; ov = r.mode === RAIL ? r.v : r.speed;
+        } else {
+          if (!avoidPlayer || !W.inCar) continue;
+          ox = W.px; oy = W.py; oh = W.ph || 0; ol = W.car && W.car.p ? W.car.p.len : 4.6; ow = W.car && W.car.p ? W.car.p.wid : 1.8;
+          ov = W.pspeed || 0;
+        }
+        const dx = ox - car.x, dy = oy - car.y;
+        if (dx * dx + dy * dy > R2) continue;
+        const lx = dx * c + dy * s;
+        if (lx <= 0) continue;
+        const ly = -dx * s + dy * c, dh = oh - car.h, ch = Math.abs(Math.cos(dh)), sh = Math.abs(Math.sin(dh));
+        const eL = ch * ol * 0.5 + sh * ow * 0.5, eW = sh * ol * 0.5 + ch * ow * 0.5;
+        if (Math.abs(ly) > eW + hw + 0.35) continue;
+        const gap = lx - hl - eL;
+        if (gap > look || gap >= best) continue;
+        best = gap; bx = ox; by = oy; bLy = ly; bW = eW; bL = eL; bV = ov * Math.cos(dh);
+      }
+      st.capV = INF;
+      if (best >= INF) return;
+      const vo = bV > 0 ? bV : 0;
+      st.capV = vo + Math.sqrt(12 * Math.max(0, best - 2.5));
+      // duran engel (oyuncu dahil): engelden uzak yana geçiş noktası; yer engelsizse hız sınırı gevşer
+      if (bV < 1 && best < 18) {
+        const side = bLy >= 0 ? -1 : 1, off = bW + hw + 0.7;
+        const need = off - Math.abs(bLy);
+        if (need > 0 && need < 3.4) {
+          const qx = bx - s * side * off + c * (bL + 3), qy = by + c * side * off + s * (bL + 3);
+          // hedef engelin ötesindeyse geçiş noktasına yönel (hedef engelden önce ise dokunma)
+          const tlx = (st.tx - car.x) * c + (st.ty - car.y) * s;
+          if (tlx > best + hl + bL && this._freePt(qx, qy, 1.0) && this._freePt(bx - s * side * off, by + c * side * off, 1.0)) {
+            st.tx = qx; st.ty = qy; st.capV = Math.max(st.capV, 8);
+          }
+        }
+      }
+    }
+
     // ---------- akış alanıyla kavşak kavşak rota ----------
+    // Kavşak merkezlerine (parçanın sağ şerit ofsetiyle) gider; dönüşte kavşak kutusunun çıkış noktasına,
+    // göbekte adanın çevresinden. Hedef parçasına girince doğrudan hedefe (son yaklaşım). Görülmüyorsa
+    // LKP'ye varınca arama çemberi içinde kavşak kavşak rastgele dolaşır (akış hedefi değişene dek).
     _route(veh, st, W, vRoute) {
-      const nav = this.nav, nodes = nav.nodes, next = this._fNext, car = veh.car;
+      const nav = this.nav, nodes = nav.nodes, car = veh.car;
       st.vdes = vRoute;
       st.mode = this.seen ? M_ROUTE : M_SEARCH;
       if (this._fNode < 0) { st.tx = this._gx; st.ty = this._gy; return; }
+      if (st.fver !== this._fVer) { st.fver = this._fVer; st.wnd = false; st.wnx = -1; }
       st.resnapT -= W.dt > 0 ? W.dt : 1 / 30;
       if (st.node < 0 || st.resnapT <= 0) this._resnap(veh, st);
       if (st.node < 0) { st.tx = this._gx; st.ty = this._gy; return; }
-      let N = nodes[st.node];
+      const N = nodes[st.node];
       // giriş yönü (eksene oturtulmuş)
       let ix = 0, iy = 0;
       if (st.prev >= 0) { ix = N.x - nodes[st.prev].x; iy = N.y - nodes[st.prev].y; }
@@ -908,23 +1069,28 @@
       const dxN = N.x - car.x, dyN = N.y - car.y, dN = Math.sqrt(dxN * dxN + dyN * dyN);
       // rotadan çok uzaklaştıysa yeniden oturt
       if (dN > 260) { st.node = -1; st.resnapT = 0; st.tx = N.x; st.ty = N.y; return; }
-      const M = next[st.node];
+      const cur = this._segOf(st.prev, st.node), offIn = this._off(cur);
+      // hedef parçasındayken (ve dönüş/göbek içinde değilken) son yaklaşım
+      if (!st.wnd && st.ph === 0 && cur >= 0 && cur === this._gSeg) { this._final(veh, st, cur, vRoute); return; }
+      let M;
+      if (st.wnd) { if (st.wnx < 0) st.wnx = this._wander(st.node, st.prev); M = st.wnx; }
+      else M = this._fNext[st.node];
       if (M < 0) {
-        // hedef kavşak: son yaklaşım doğrudan hedef noktaya; aramada çember içinde rastgele dolaş
-        st.tx = this._gx; st.ty = this._gy;
-        const dgx = this._gx - car.x, dgy = this._gy - car.y;
-        if (!this.seen && dgx * dgx + dgy * dgy < 18 * 18) {
-          const nb = this._wander(st.node, st.prev);
-          if (nb >= 0) { st.prev = st.node; st.node = nb; st.ph = 0; }
-          st.vdes = Math.min(vRoute, 12);
+        // hedef kavşak: kavşağa var, hedef parçasına dön (ya da doğrudan hedefe)
+        st.tx = N.x - iy * offIn; st.ty = N.y + ix * offIn;
+        st.cx = N.x; st.cy = N.y; st.cv = 8.5; st.cr = 10;
+        if (dN < Math.max(N.hx, N.hy) + 2) {
+          const gs = this._gSeg, sg = gs >= 0 ? nav.segs[gs] : null;
+          const og = sg === null ? -1 : sg.A === st.node ? sg.B : sg.B === st.node ? sg.A : -1;
+          if (og >= 0 && !nodes[og].dead) this._advance(st, og);
+          else { st.tx = this._gx; st.ty = this._gy; st.arrive = !this.seen; st.stopD = 2; st.cv = INF; }
         }
-        st.arrive = !this.seen; st.stopD = 2;
         return;
       }
       const Mn = nodes[M];
       let ox = Mn.x - N.x, oy = Mn.y - N.y;
       if (Math.abs(ox) >= Math.abs(oy)) { ox = ox >= 0 ? 1 : -1; oy = 0; } else { oy = oy >= 0 ? 1 : -1; ox = 0; }
-      const dot = ix * ox + iy * oy;
+      const dot = ix * ox + iy * oy, offOut = this._off(this._segOf(st.node, M));
       if (N.round) {
         // göbek: adanın sağından (açı azalan yönde) dolaş, çıkış açısına gelince sonraki kavşağa
         if (st.ph === 0) {
@@ -943,7 +1109,7 @@
         return;
       }
       if (st.ph === 0) {
-        st.tx = N.x - iy * ROUTE_OFF; st.ty = N.y + ix * ROUTE_OFF;
+        st.tx = N.x - iy * offIn; st.ty = N.y + ix * offIn;
         if (dot > 0.7) {
           if (dN < Math.max(N.hx, N.hy) + 2) { this._advance(st, M); }
         } else {
@@ -954,15 +1120,34 @@
       if (st.ph === 1) {
         // dönüş çıkış noktası: kavşak kutusunun öbür yanı, sağ şerit
         const hw = ox !== 0 ? N.hx : N.hy;
-        const ex = N.x + ox * (hw + 3) - oy * ROUTE_OFF, ey = N.y + oy * (hw + 3) + ox * ROUTE_OFF;
+        const ex = N.x + ox * (hw + 3) - oy * offOut, ey = N.y + oy * (hw + 3) + ox * offOut;
         st.tx = ex; st.ty = ey;
         st.cx = N.x; st.cy = N.y; st.cv = dot < -0.5 ? 4 : 8.5; st.cr = 4;
         const along = (car.x - N.x) * ox + (car.y - N.y) * oy;
         const dex = ex - car.x, dey = ey - car.y;
-        if (along > hw || dex * dex + dey * dey < 36) { this._advance(st, M); st.tx = Mn.x - oy * ROUTE_OFF; st.ty = Mn.y + ox * ROUTE_OFF; }
+        if (along > hw || dex * dex + dey * dey < 36) { this._advance(st, M); st.tx = Mn.x - oy * offOut; st.ty = Mn.y + ox * offOut; }
       }
     }
-    _advance(st, M) { st.prev = st.node; st.node = M; st.ph = 0; st.cv = INF; }
+    // son yaklaşım: hedef parçası üzerinde hedefin eksen izdüşümüne (gidiş yönünün sağ ofsetiyle);
+    // yakında ve yol engelsizse doğrudan hedefe. Aramada hedefe varınca dolaşma başlar.
+    _final(veh, st, sid, vRoute) {
+      const car = veh.car, gx = this._gx, gy = this._gy;
+      const ex = this._gpx - car.x, ey = this._gpy - car.y, de = Math.sqrt(ex * ex + ey * ey);
+      const sg = this.nav.segs[sid], off = this._off(sid);
+      // gidiş yönü eksen boyunca (dikey parça: y, yatay: x)
+      let ux = 0, uy = 0;
+      if (sg.v) uy = ey >= 0 ? 1 : -1; else ux = ex >= 0 ? 1 : -1;
+      st.tx = this._gpx - uy * off; st.ty = this._gpy + ux * off;
+      const dgx = gx - car.x, dgy = gy - car.y, dg = Math.sqrt(dgx * dgx + dgy * dgy);
+      if (dg < 25 && this._clearPath(car.x, car.y, gx, gy)) { st.tx = gx; st.ty = gy; }
+      st.arrive = !this.seen; st.stopD = 2;
+      if (!this.seen && (dg < 18 || de < 12)) {
+        // LKP'ye varıldı, oyuncu yok: çember içinde dolaş
+        st.wnd = true; st.wnx = -1;
+        st.vdes = Math.min(vRoute, 12);
+      }
+    }
+    _advance(st, M) { st.prev = st.node; st.node = M; st.ph = 0; st.cv = INF; st.wnx = -1; }
     // en yakın parçanın iki ucundan akış maliyeti küçük olanı (arkada kalan uca ceza)
     _resnap(veh, st) {
       const nav = this.nav, o = this._o, car = veh.car;
@@ -1033,6 +1218,10 @@
     }
 
     // ================= YAYA POLİSLER =================
+    // çekilen aracın yaya polisi araca dönsün
+    _footBack(st) {
+      for (let k = 0; k < this.nFoot; k++) if (this._fSt[k] === st) this._fBack[k] = 1;
+    }
     _orphanFoot(st) {
       for (let k = 0; k < this.nFoot; k++) if (this._fSt[k] === st) { this._fSt[k] = null; this._fCar[k] = null; }
       st.foot = -1; st.waitT = 0;
@@ -1061,7 +1250,7 @@
         tx = px + c * 0.1 * len + sn * (wid / 2 + 0.6); ty = py + sn * 0.1 * len - c * (wid / 2 + 0.6);
       }
       const chase = s > 0 && (W.onFoot || psp < 4);
-      const spd = FOOT_V[s > 0 ? s : 1];
+      const spd = FOOT_V[s > 0 ? s : 1], far2 = (vr + 40) * (vr + 40);
       // başıboş polis yayaları (ör. hata ayıklama ile doğan) da yakındaysa kovalamaya katılır
       if (s > 0 && this.nFoot < 8) {
         for (let i = 0; i < pd.n && this.nFoot < 8; i++) {
@@ -1082,20 +1271,23 @@
         if (!carOk && st !== null) { this._fSt[k] = null; this._fCar[k] = null; }
         const dx = pd.x[i] - px, dy = pd.y[i] - py, d2 = dx * dx + dy * dy;
         const vis = typeof W.isVisible === 'function' ? W.isVisible(pd.x[i], pd.y[i], 1) : true;
-        // aranma bitti ya da çekiliyor: araca dön (yoksa görünmeyince kaybol)
-        if (s === 0 || this._fBack[k] || !chase) {
-          if (carOk && (s === 0 || this._fBack[k] || !chase)) {
-            const ex = car.x, ey = car.y, cx = pd.x[i] - ex, cy = pd.y[i] - ey;
-            if (cx * cx + cy * cy < 2.6 * 2.6) { pd.remove(i); this._footRemoveAt(k); continue; }
-            pd.seek(i, ex, ey, spd);
-          } else if (!vis || d2 > (vr + 40) * (vr + 40)) { pd.remove(i); this._footRemoveAt(k); continue; }
-          else if (s > 0 && !chase) pd.seek(i, pd.x[i], pd.y[i], spd);
-          if (s === 0 && !vis) { pd.remove(i); this._footRemoveAt(k); continue; }
-          if (s > 0 && chase) this._fBack[k] = 0;
+        const far = !vis && d2 > far2;
+        if (s === 0 || this._fBack[k] === 1 || !chase) {
+          // aranma bitti / araç çekiliyor / oyuncu araçla kaçıyor: aracına dön, binince kaybolur
+          if (carOk) {
+            const cx = pd.x[i] - car.x, cy = pd.y[i] - car.y;
+            if (cx * cx + cy * cy < 2.6 * 2.6 || far) { pd.remove(i); this._footRemoveAt(k); continue; }
+            pd.seek(i, car.x, car.y, spd);
+            continue;
+          }
+          // aracı yok: görünmeyince kaybolur; bu arada olduğu yerde durur (yıldız varken kovalamaya döner)
+          if (s > 0 && chase && !far) { this._fBack[k] = 0; pd.seek(i, tx, ty, spd); continue; }
+          if (!vis || d2 > far2) { pd.remove(i); this._footRemoveAt(k); continue; }
+          pd.seek(i, pd.x[i], pd.y[i], spd);
           continue;
         }
         // çok uzaklaştı ve görünmüyor: kaldır
-        if (!vis && d2 > (vr + 40) * (vr + 40)) { pd.remove(i); this._footRemoveAt(k); continue; }
+        if (far) { pd.remove(i); this._footRemoveAt(k); continue; }
         pd.seek(i, tx, ty, spd);
       }
       // doğurma: duran polis aracından (oyuncuya 12 m içinde)
@@ -1208,6 +1400,7 @@
       if (car === null || st === null || typeof st !== 'object' || st.police !== true) {
         out.throttle = 0; out.brake = 0; out.handbrake = true; out.steer = 0; return;
       }
+      if (st.revCD > 0) st.revCD -= dt;
       if (st.revT > 0) {
         // geri manevra: fren (durunca geri vites = geri gaz), ters direksiyon
         st.revT -= dt;
@@ -1226,7 +1419,17 @@
       const kap = (2 * Math.sin(alpha)) / Lu;
       let steer = U.clamp(Math.atan(car.p.L * kap) / car.p.steerMax, -1, 1);
       let vd = st.vdes;
-      if (alpha > PI / 2 || alpha < -PI / 2) { steer = alpha > 0 ? 1 : -1; if (vd > 6) vd = 6; } // hedef arkada: tam kilit, yavaş
+      if (st.capV < vd) vd = st.capV;
+      if (alpha > PI / 2 || alpha < -PI / 2) {
+        // hedef arkada: tam kilit, yavaş; yakın ve yavaşken (rota dışı kiplerde) üç noktalı dönüş
+        steer = alpha > 0 ? 1 : -1; if (vd > 6) vd = 6;
+        if ((alpha > 2 || alpha < -2) && dist < 14 && (!st.arrive || dist > st.stopD + 2.5) && v < 3 && st.revCD <= 0 &&
+            st.mode !== M_ROUTE && st.mode !== M_SEARCH && st.mode !== M_LEAVE) {
+          st.revT = 1.0; st.revS = alpha > 0 ? -1 : 1; st.revCD = 3;
+          out.throttle = 0; out.brake = 1; out.steer = st.revS; st.lastThr = 0;
+          return;
+        }
+      }
       const ak = kap < 0 ? -kap : kap;
       if (ak > 1e-4) { const vk = Math.sqrt(7 / ak); if (vk < vd) vd = vk; }
       if (st.cv < INF) {
