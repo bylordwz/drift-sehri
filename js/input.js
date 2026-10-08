@@ -270,11 +270,29 @@
       if (this.sliderId !== null) { this.latchP.add(this.sliderId); this.sliderId = null; this.sliderVal = 0; this.drawSlider(); }
       if (this.stickId !== null) { this.latchP.add(this.stickId); this.stickEnd(); }
       for (let i = 0; i < this.padPrev.length; i++) if (this.padPrev[i]) this.padLatch[i] = true;
+      this.latchPad();
       this.padAxLatch = true;
-      this.backDownT = -1; this.backFired = true;
       this.dsteer = 0; this.gasWas = false;
       this.clearEdges();
       this.syncOn();
+    }
+    // Şu an basılı kumanda düğmeleri bırakılana kadar yok sayılır (kaplamayı B/Geri/Start ile kapatınca
+    // aynı basış oyunda yeni bir kenar — haritayı yeniden açma, duraklatma — üretmesin)
+    latchPad() {
+      this.backDownT = -1; this.backFired = true;
+      if (!(this.padCount > 0) || !navigator.getGamepads) return;
+      const pads = navigator.getGamepads();
+      for (let k = 0; k < pads.length; k++) {
+        const gp = pads[k];
+        if (!gp || !gp.connected) continue;
+        for (let i = 0; i < gp.buttons.length; i++) {
+          const bt = gp.buttons[i];
+          const p = !!bt && (bt.pressed || bt.value > 0.5);
+          if (p) this.padLatch[i] = true;
+          this.padPrev[i] = p;
+        }
+        break;
+      }
     }
     releaseAll() {
       this.codes.clear(); this.kc = {}; this.latchK.clear();
@@ -358,8 +376,10 @@
             this.backDownT = -1;
           }
           this.padPrev[8] = bk;
-          // L3 = korna (araçta)
-          padHorn = !foot && b(10) > 0.5;
+          // L3 = korna (araçta); önceki durum bağlam kilidi için saklanır
+          const l3 = b(10) > 0.5;
+          this.padPrev[10] = l3;
+          padHorn = !foot && l3;
         } else {
           ed(5, 'gup'); ed(4, 'gdn'); ed(2, 'kick'); ed(3, 'reset'); ed(9, 'pause'); ed(8, 'cam');
         }
@@ -400,6 +420,7 @@
     reset() {
       this.ptr.clear(); this.pc = {}; this.sliderId = null; this.sliderVal = 0; this.dsteer = 0; this.drawSlider();
       if (this.stickId !== null) this.stickEnd();
+      this.latchPad();
       this.clearEdges();
     }
   }

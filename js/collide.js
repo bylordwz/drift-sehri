@@ -114,4 +114,41 @@
     }
     return { vn: -vn, vt };
   };
+
+  // İki dinamik gövde: a ve b {x,y,vx,vy,w,m,I}. ct.n a'yı b'den dışarı iter.
+  // Konum düzeltmesi ters kütle oranıyla bölünür. Dönen nesne paylaşılır (saklama!).
+  // Dönüş: {vn: yaklaşma hızı (normal, > 0 çarpışıyor), vt: teğetsel kayma hızı}
+  const R2 = { vn: 0, vt: 0 };
+  C.resolve2 = (a, b, ct, e, mu) => {
+    const ima = 1 / a.m, imb = 1 / b.m, ia = 1 / a.I, ib = 1 / b.I;
+    const sum = ima + imb;
+    const corr = Math.min(ct.pen, 0.6) * 0.92;
+    const ka = ima / sum, kb = imb / sum;
+    a.x += ct.nx * corr * ka; a.y += ct.ny * corr * ka;
+    b.x -= ct.nx * corr * kb; b.y -= ct.ny * corr * kb;
+    const rax = ct.px - a.x, ray = ct.py - a.y;
+    const rbx = ct.px - b.x, rby = ct.py - b.y;
+    // temas noktasındaki bağıl hız (a − b)
+    const rvx = a.vx - a.w * ray - (b.vx - b.w * rby);
+    const rvy = a.vy + a.w * rax - (b.vy + b.w * rbx);
+    const vn = rvx * ct.nx + rvy * ct.ny;
+    const tvx = rvx - vn * ct.nx, tvy = rvy - vn * ct.ny;
+    const vt = Math.sqrt(tvx * tvx + tvy * tvy);
+    R2.vt = vt;
+    if (vn >= 0) { R2.vn = 0; return R2; }
+    const rnA = rax * ct.ny - ray * ct.nx, rnB = rbx * ct.ny - rby * ct.nx;
+    const j = (-(1 + e) * vn) / (sum + rnA * rnA * ia + rnB * rnB * ib);
+    a.vx += j * ct.nx * ima; a.vy += j * ct.ny * ima; a.w += rnA * j * ia;
+    b.vx -= j * ct.nx * imb; b.vy -= j * ct.ny * imb; b.w -= rnB * j * ib;
+    if (vt > 1e-4) {
+      const tx = tvx / vt, ty = tvy / vt;
+      const rtA = rax * ty - ray * tx, rtB = rbx * ty - rby * tx;
+      let jt = -vt / (sum + rtA * rtA * ia + rtB * rtB * ib);
+      jt = U.clamp(jt, -mu * j, mu * j);
+      a.vx += jt * tx * ima; a.vy += jt * ty * ima; a.w += rtA * jt * ia;
+      b.vx -= jt * tx * imb; b.vy -= jt * ty * imb; b.w -= rtB * jt * ib;
+    }
+    R2.vn = -vn;
+    return R2;
+  };
 })();

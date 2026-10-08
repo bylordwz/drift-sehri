@@ -1,8 +1,11 @@
 'use strict';
-// Arayüz: menüler, garaj, ayarlar, oyun içi göstergeler
+// Arayüz: menüler, garaj, ayarlar, oyun içi göstergeler. Açık şehre özgü göstergeler, harita, telefon ve
+// görev sonucu hud.js'tedir (DS.WorldUI); bu dosya onları ekran listesi, eylemler ve kare güncellemesiyle bağlar.
 (function () {
   const DS = window.DS, U = DS.U;
   const $ = (s) => document.querySelector(s);
+  // ?prof: FPS satırına açık şehir süreleri eklenir
+  const PROF = typeof location !== 'undefined' && /[?&]prof\b/.test(location.search);
 
   // DOM'a yalnızca değer değiştiğinde yaz (her karede yazmak stil/yerleşim hesabını tetikler)
   const setT = (el, v) => { if (el._t !== v) { el._t = v; el.textContent = v; } };
@@ -40,7 +43,7 @@
         thud: $('#tandem-hud'), tprog: $('#t-prog'), tgap: $('#t-gap-n'), tmark: $('#t-gap-mark'), tscore: $('#t-score-n'),
         count: $('#countdown'), toast: $('#toast'), fps: $('#fps'), controls: $('#controls'),
       };
-      this.screens = ['menu', 'garage', 'settings', 'pause', 'result'].reduce((o, id) => { o[id] = $('#' + id); return o; }, {});
+      this.screens = ['menu', 'garage', 'settings', 'pause', 'result', 'map', 'phone', 'mresult'].reduce((o, id) => { const el = $('#' + id); if (el) o[id] = el; return o; }, {});
       document.querySelectorAll('[data-act]').forEach((b) => b.addEventListener('click', () => {
         this.g.audio.init();
         this.g.audio.beep(660, 0.05, 0.05);
@@ -58,7 +61,14 @@
       if (U.isTouch) markTouch();
       window.addEventListener('touchstart', markTouch, { once: true, passive: true });
       this.prev = null;
+      this._wSess = false;
+      // mini haritaya dokunmak/tıklamak açık şehirde tam ekran haritayı açar
+      this.el.mini.addEventListener('click', () => {
+        const g = this.g;
+        if (g.mode === 'world' && g.world && g.state === 'play' && !this.current && g.world.openMap) g.world.openMap();
+      });
       this.updateMenu();
+      if (DS.WorldUI) DS.WorldUI.init(game);
     },
 
     sizeCanvases() {
@@ -80,7 +90,7 @@
       for (const k in this.screens) this.screens[k].hidden = k !== id;
       this.current = id;
       // tam ekran paneller açıkken oyun göstergelerini gizle
-      if (this.g.state === 'play' || this.g.state === 'pause') this.el.hud.hidden = id === 'garage' || id === 'settings';
+      if (this.g.state === 'play' || this.g.state === 'pause') this.el.hud.hidden = id === 'garage' || id === 'settings' || id === 'map';
       if (id === 'garage') { this.buildGarage(); setTimeout(() => this.sizeCanvases(), 0); }
       if (id === 'settings') this.loadSettings();
       if (id === 'menu') this.updateMenu();
@@ -89,19 +99,47 @@
 
     act(a) {
       const g = this.g;
+      // açık şehir oturumu (yalnızca dünya modunda; dünya nesnesi yoksa null)
+      const W = g.mode === 'world' && g.world ? g.world : null, WU = DS.WorldUI;
       switch (a) {
+        case 'world':
+          if (g.startWorld) g.startWorld();
+          else this.toast('Açık şehir yüklenemedi', 2000);
+          break;
         case 'free': g.startFree(); break;
         case 'tandem': g.startTandem(); break;
-        case 'garage': this.prev = this.current; this.show('garage'); break;
+        case 'garage':
+          // açık şehirde duraklatma kartından garaj yalnızca güvenli evde açılır
+          if (W && this.current === 'pause' && !(W.canGarage && W.canGarage())) { this.toast('Garaj yalnızca güvenli evde', 1800); break; }
+          this.prev = this.current; this.show('garage');
+          break;
         case 'settings': this.prev = this.current; this.show('settings'); break;
         case 'back':
           g.persist();
-          if (this.prev === 'pause') this.show('pause');
+          if (this.prev === 'world') {
+            // dünyanın açtığı garaj (güvenli ev): oyuna dön, bekleyen girdi kenarlarını sil
+            this.prev = null;
+            this.hideAll();
+            this.el.hud.hidden = false;
+            g.input.reset();
+            if (g.world && g.world.onGarageChange) g.world.onGarageChange();
+          } else if (this.prev === 'pause') this.show('pause');
           else this.show('menu');
           break;
         case 'resume': g.resume(); break;
-        case 'respawn': g.respawn(); g.resume(); break;
+        case 'respawn':
+          if (W && W.unstuck) W.unstuck();
+          else g.respawn();
+          g.resume();
+          break;
         case 'menu': g.toMenu(); break;
+        // duraklatma kartından açılan kaplamalar önce oyunu sürdürür (yoksa kapanınca duraklatılmış ama ekransız kalır)
+        case 'map': g.resume(); if (W && W.openMap) W.openMap(); break;
+        case 'abort': g.resume(); if (W && W.abortMission) W.abortMission(); break;
+        case 'map-close': if (WU) WU.requestClose('map'); break;
+        case 'phone-close': if (WU) WU.requestClose('phone'); break;
+        case 'mres-retry': if (WU) WU.requestClose('mresult', 'retryMission'); break;
+        case 'mres-close': if (WU) WU.requestClose('mresult'); break;
       }
     },
 
@@ -125,6 +163,7 @@
       const s = () => this.g.save.settings;
       const on = (id, key, conv) => {
         const el = $(id);
+        if (!el) return;
         el.addEventListener(el.type === 'range' ? 'input' : 'change', async () => {
           const v = el.type === 'checkbox' ? el.checked : conv ? conv(el.value) : el.value;
           s()[key] = v;
@@ -140,6 +179,7 @@
       on('#s-time', 'time'); on('#s-weather', 'weather'); on('#s-quality', 'quality', (v) => (v === 'auto' ? 'auto' : Number(v)));
       on('#s-dynres', 'dynres'); on('#s-fpscap', 'fpsCap', Number);
       on('#s-sound', 'sound'); on('#s-vol', 'vol', Number); on('#s-fps', 'fps');
+      on('#s-wcam', 'wcam'); on('#s-wtime', 'wtime');
     },
     loadSettings() {
       const s = this.g.save.settings;
@@ -148,6 +188,9 @@
       $('#s-time').value = s.time; $('#s-weather').value = s.weather; $('#s-quality').value = String(s.quality);
       $('#s-dynres').checked = !!s.dynres; $('#s-fpscap').value = String(s.fpsCap || 0);
       $('#s-sound').checked = s.sound; $('#s-vol').value = s.vol; $('#s-fps').checked = s.fps;
+      const wc = $('#s-wcam'), wt = $('#s-wtime');
+      if (wc) wc.value = s.wcam === 'chase' ? 'chase' : 'north';
+      if (wt) wt.value = s.wtime || 'cycle';
     },
 
     // ---------------- GARAJ ----------------
@@ -309,7 +352,15 @@
     frame(dt) {
       const g = this.g, Q = this.Q || DS.Quality.TIERS[2];
       if (this.current === 'garage') this.drawPreview();
-      if (g.state !== 'play' && g.state !== 'pause') return;
+      if (g.state !== 'play' && g.state !== 'pause') { this._wSess = false; return; }
+      // açık şehir: dünya göstergeleri (hud.js); yeni oturumun ilk karesinde geçici durumlar sıfırlanır
+      const W = g.mode === 'world' && g.world ? g.world : null;
+      if (W && DS.WorldUI) {
+        if (!this._wSess) { this._wSess = true; DS.WorldUI.reset(); }
+        DS.WorldUI.frame(dt);
+        // tam ekran harita açıkken oyun göstergeleri gizli (ve dünya donuk): güncellenecek bir şey yok
+        if (this.current === 'map') return;
+      } else this._wSess = false;
       const sc = g.score, el = this.el;
       const textTick = due(this, 'tText', dt, Q.textHz);
       const gaugeTick = due(this, 'tGauge', dt, Q.gaugeHz), miniTick = due(this, 'tMini', dt, Q.miniHz);
@@ -364,7 +415,8 @@
       };
       pump(sc.msgs);
       if (g.judge) pump(g.judge.msgs);
-      if (textTick) {
+      // puan/kasa kutusu açık şehirde gizli (para #w-money'de)
+      if (textTick && !W) {
         setT(el.total, U.fmt(sc.total));
         setT(el.money, '₺' + U.fmt(g.save.money));
       }
@@ -390,7 +442,10 @@
           }
         } else setH(el.count, true);
       } else { setH(el.thud, true); setH(el.count, true); }
-      if (gaugeTick) this.drawGauge();
+      // yayayken devir saati gizli
+      const noGauge = !!W && !!W.onFoot;
+      setH(el.gauge, noGauge);
+      if (gaugeTick && !noGauge) this.drawGauge();
       if (miniTick) this.drawMini();
       if (g.save.settings.fps) {
         setH(el.fps, false);
@@ -398,7 +453,13 @@
         if (this.tFps > 0.5) {
           this.tFps = 0;
           const lv = g.Q ? `${g.Q.name} · %${Math.round(g.dpr * 100)}` : '';
-          setT(el.fps, `${Math.round(g.fpsAvg)} FPS · ${lv}${g.lock30 ? ' · 30 kilit' : ''}`);
+          let txt = `${Math.round(g.fpsAvg)} FPS · ${lv}${g.lock30 ? ' · 30 kilit' : ''}`;
+          if (W && PROF && W.prof) {
+            const p = W.prof, tr = W.traffic, pd = W.peds;
+            const nv = tr ? (tr.count !== undefined ? tr.count : tr.list ? tr.list.length : 0) : 0;
+            txt += ` · AI ${(+p.ai || 0).toFixed(2)} ms · çizim ${(+p.draw || 0).toFixed(2)} ms · araç ${nv | 0} · yaya ${pd ? pd.n | 0 : 0}`;
+          }
+          setT(el.fps, txt);
         }
       } else setH(el.fps, true);
     },
@@ -462,6 +523,7 @@
 
     drawMini() {
       const c = this.el.mini, g = this.miniCtx, game = this.g, city = game.city, mini = city.mini;
+      if (game.mode === 'world' && game.world && DS.WorldUI && DS.WorldUI.ready) { this.drawMiniWorld(game.world); return; }
       if (!mini) return;
       const dpr = c._dpr || 1, w = c._w || 120, h = c._h || 120;
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -490,6 +552,40 @@
       g.fillStyle = '#ffb23e';
       g.beginPath(); g.moveTo(7, 0); g.lineTo(-5, -4.5); g.lineTo(-2.5, 0); g.lineTo(-5, 4.5); g.closePath(); g.fill();
       g.restore();
+      g.lineWidth = 2; g.strokeStyle = 'rgba(242,237,227,0.35)';
+      g.beginPath(); g.arc(w / 2, h / 2, w / 2 - 2, 0, U.TAU); g.stroke();
+    },
+
+    // Açık şehir mini haritası: odak (yaya ya da araç) merkezde, soluk taban harita (hud.js), rota + blipler
+    drawMiniWorld(W) {
+      const c = this.el.mini, g = this.miniCtx, game = this.g, WU = DS.WorldUI;
+      const f = game.focus ? game.focus() : W.focus ? W.focus() : game.car;
+      if (!f) return;
+      const dpr = c._dpr || 1, w = c._w || 120, h = c._h || 120;
+      const rot = game.cam.rot;
+      // ölçek (css px/m): yayayken yakın, araçta hızla uzaklaşır
+      const k = W.onFoot ? 0.85 : U.lerp(0.6, 0.35, U.smooth(5, 40, Math.hypot(f.vx || 0, f.vy || 0)));
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, w, h);
+      g.save();
+      g.beginPath(); g.arc(w / 2, h / 2, w / 2 - 2, 0, U.TAU); g.clip();
+      g.fillStyle = '#141a17'; g.fillRect(0, 0, w, h);
+      if (!WU.drawMiniBase(g, w, h, k, f.x, f.y, rot)) {
+        const mini = game.city.mini;
+        if (mini) {
+          g.translate(w / 2, h / 2); g.rotate(rot); g.scale(k / mini.sc, k / mini.sc);
+          g.drawImage(mini.c, -f.x * mini.sc, -f.y * mini.sc);
+          g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+      }
+      WU.drawMiniOverlay(g, w, h, k, f.x, f.y, rot);
+      g.restore();
+      // oyuncu oku
+      const a = (f.h || 0) + rot, cs = Math.cos(a), sn = Math.sin(a);
+      g.setTransform(dpr * cs, dpr * sn, -dpr * sn, dpr * cs, dpr * (w / 2), dpr * (h / 2));
+      g.fillStyle = '#ffb23e'; g.strokeStyle = 'rgba(8,10,16,0.9)'; g.lineWidth = 1.2; g.lineJoin = 'round';
+      g.beginPath(); g.moveTo(7, 0); g.lineTo(-5, -4.5); g.lineTo(-2.5, 0); g.lineTo(-5, 4.5); g.closePath(); g.fill(); g.stroke();
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
       g.lineWidth = 2; g.strokeStyle = 'rgba(242,237,227,0.35)';
       g.beginPath(); g.arc(w / 2, h / 2, w / 2 - 2, 0, U.TAU); g.stroke();
     },

@@ -313,6 +313,39 @@
   const PARK_COLORS = ['#8a8f98', '#f2efe6', '#1b1d22', '#c8102e', '#1d4e9e', '#b5a27a', '#2f6f4f', '#7fd1ff'];
   // açık dünya kaplamaları ('polis', 'taksi'): garaj listesinde (DS.LIVERIES) yoklar
   const POLIS_WHITE = '#f4f6f8', POLIS_BLUE = '#1f4fa8', POLIS_BAND = 0.15;
+  // Kaputtaki "POLİS" yazısı yazı tipinden bağımsız blok harflerle (3×5 ızgara, İ'nin noktası üst satırda):
+  // fillText'in ilk kullanımdaki yazı tipi arama gecikmesi (yavaş makinede ~9 ms) olmaz, her sistemde aynı görünür
+  const POLIS_TXT = [
+    ['110', '101', '110', '100', '100'], // P
+    ['111', '101', '101', '101', '111'], // O
+    ['100', '100', '100', '100', '111'], // L
+    ['1', '1', '1', '1', '1'],           // İ (nokta ayrıca)
+    ['111', '100', '111', '001', '111'], // S
+  ];
+  const POLIS_COLS = 17, POLIS_ROWS = 6;
+  // (0,0) merkezli, yerel +x okuma yönü, +y aşağı; tek yol + tek dolgu (bitişik hücrelerde dikiş olmaz)
+  function polisText(g, maxW, maxH) {
+    const cell = Math.min(maxW / POLIS_COLS, maxH / POLIS_ROWS);
+    const y0 = (-POLIS_ROWS * cell) / 2;
+    let x = (-POLIS_COLS * cell) / 2;
+    g.beginPath();
+    for (let k = 0; k < POLIS_TXT.length; k++) {
+      const gl = POLIS_TXT[k], w = gl[0].length;
+      for (let r = 0; r < 5; r++) {
+        const row = gl[r];
+        for (let c = 0; c < w; c++) {
+          if (row[c] !== '1') continue;
+          let e = c;
+          while (e + 1 < w && row[e + 1] === '1') e++;
+          g.rect(x + c * cell, y0 + (r + 1) * cell, (e - c + 1) * cell, cell);
+          c = e;
+        }
+      }
+      if (k === 3) g.rect(x, y0, cell, cell * 0.8);
+      x += (w + 1) * cell;
+    }
+    g.fill();
+  }
 
   function bodyPath(g, L, W, sh) {
     const hl = L / 2, hw = W / 2;
@@ -349,11 +382,18 @@
     },
 
     build(def, setup) {
-      const L = def.len, W = def.wid, sh = def.shape;
-      const mw = L + 0.9, mh = W + 0.9;
+      const mw = def.len + 0.9, mh = def.wid + 0.9;
       const c = U.canvas(mw * PX, mh * PX), g = c.getContext('2d');
       g.scale(PX, PX);
       g.translate(mw / 2, mh / 2);
+      this.paint(g, def, setup);
+      return { c, w: mw, h: mh };
+    },
+
+    // Aracı g'nin geçerli dönüşümüne çizer (metre, merkez orijinde, +x ileri). build() ve açık dünya
+    // sprite'ları (ActorSprites: ara tuval olmadan doğrudan gölgeli tuvale) kullanır; dönüşüm aynı kalır.
+    paint(g, def, setup) {
+      const L = def.len, W = def.wid, sh = def.shape;
       const hl = L / 2, hw = W / 2;
       const lv = setup.livery;
       // polis kaplaması her zaman beyaz gövde üstüne çizilir
@@ -445,15 +485,10 @@
         g.beginPath(); g.moveTo(xB1 - 0.05, -cw * 0.95); g.lineTo(xB1 - 0.05, cw * 0.95); g.stroke();
       }
       if (lv === 'polis') {
-        // kaputta enine "POLİS" yazısı (yalnızca yapımda bir kez)
-        const mx = (xW0 + hl) / 2, maxW = W * (1 - 2 * POLIS_BAND) * 0.98;
-        let fs = Math.min((hl - xW0) * 0.5, W * 0.24);
-        g.save(); g.translate(mx, 0); g.rotate(Math.PI / 2);
-        g.font = `800 ${fs}px Arial, Helvetica, sans-serif`;
-        const tw = g.measureText('POLİS').width;
-        if (tw > maxW) { fs *= maxW / tw; g.font = `800 ${fs}px Arial, Helvetica, sans-serif`; }
-        g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = POLIS_BLUE;
-        g.fillText('POLİS', 0, 0);
+        // kaputta enine "POLİS" yazısı (yalnızca yapımda bir kez); harflerin üstü aracın önüne bakar
+        g.save(); g.translate((xW0 + hl) / 2, 0); g.rotate(Math.PI / 2);
+        g.fillStyle = POLIS_BLUE;
+        polisText(g, W * (1 - 2 * POLIS_BAND) * 0.94, (hl - xW0) * 0.55);
         g.restore();
       }
 
@@ -564,7 +599,6 @@
         g.fillStyle = '#0d0e10';
         g.fillRect(wx - 0.08, -hw * 0.98, 0.4, 0.06); g.fillRect(wx - 0.08, hw * 0.92, 0.4, 0.06);
       }
-      return { c, w: mw, h: mh };
     },
 
     // Tavan ortasının araç ekseni üzerindeki konumu (m, ağırlık merkezinden öne +): çakar/taksi lambası

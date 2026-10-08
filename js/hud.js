@@ -12,6 +12,8 @@
   const setT = (el, v) => { if (el._t !== v) { el._t = v; el.textContent = v; } };
   const setC = (el, c, on) => { const k = '_c' + c; if (el[k] !== on) { el[k] = on; el.classList.toggle(c, on); } };
   const setH = (el, v) => { if (el._h !== v) { el._h = v; el.hidden = v; } };
+  // gövde sınıfları başka modüllerce de (main/world) değiştirilir: önbellek yerine gerçek durumla karşılaştır
+  const setB = (c, on) => { const l = document.body.classList; if (l.contains(c) !== on) l.toggle(c, on); };
   // çubuk dolgusu: sayı 1/400 adımla karşılaştırılır, dize yalnızca değişince kurulur
   const setX = (el, v) => {
     v = Math.round(U.sat(v) * 400) / 400;
@@ -29,6 +31,10 @@
   const MEDAL = ['', 'Bronz', 'Gümüş', 'Altın'];
   const TIER = ['Kolay', 'Orta', 'Zor'];
   const OVER = { map: 1, phone: 1, mresult: 1 };
+  // ekip adları (DS.CREWS yüklenmemişse)
+  const CREW_N = { kulup: 'Drift Kulübü', sanayi: 'Sanayi Kamyoncuları', merkez: 'Merkez Yarışçıları' };
+  // "F — Bin" gibi klavye ipuçları: dokunmatikte bağlamsal düğme aynı işi gösterdiğinden gizlenir
+  const KEYHINT = /^[^\s—]{1,6} — /;
 
   // Blip türleri (§2.6.13): renk, şekil (0 daire, 1 kare, 2 elmas, 3 ev), yarıçap (css px), harita süzgeci
   const BK = [];
@@ -93,6 +99,8 @@
       this._ptrs = [];
       this._padPrev = [];
       this._kSprite = null;
+      // "K" işareti web yazı tipi yüklenmeden çizilmiş olabilir
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { this._kSprite = null; }).catch(() => {});
       this._bindMap();
       this._bindKeys();
       window.addEventListener('resize', () => { if (this.isMapOpen()) { this._sizeMap(); this.mapDirty = true; } });
@@ -100,16 +108,18 @@
 
     world() { const g = this.g; return g && g.world ? g.world : null; },
 
-    // yeni oturumda (menüden açık şehre girerken / menüye dönerken) geçici durumları temizle
+    // yeni açık şehir oturumu (UI.frame menüden sonraki ilk dünya karesinde çağırır): geçici durumları temizle,
+    // göstergeler ilk karede yazılsın
     reset() {
       if (!this.ready) return;
       this._bigQ.length = 0; this._bigT = 0;
       const e = this.el;
-      if (e.big) setC(e.big, 'on', false);
-      if (e.zone) setC(e.zone, 'on', false);
-      this._money = null;
+      setC(e.big, 'on', false);
+      setC(e.zone, 'on', false);
+      this._money = null; this._st = -1; this._tsec = -2; this._bo = -1;
+      this._tt = 1;
       if (this._wpTimer) { clearTimeout(this._wpTimer); this._wpTimer = 0; }
-      this.loading(false);
+      this._ptrs.length = 0;
     },
 
     // ---------------- kare ----------------
@@ -166,7 +176,7 @@
       setC(e.hp, 'low', hp < 30);
       // araç hasarı
       const ch = h.carHp;
-      const noCar = !(ch >= 0) || !h.inCar && ch < 0;
+      const noCar = !(ch >= 0);
       setH(e.carhp, noCar);
       if (!noCar) {
         setX(e.carhpI, ch);
@@ -198,7 +208,8 @@
         }
       }
       // bağlam ipucu, bölge adı
-      const pr = h.prompt || '';
+      let pr = h.prompt || '';
+      if (pr && KEYHINT.test(pr) && document.body.classList.contains('touch')) pr = '';
       setH(e.prompt, !pr);
       if (pr) setT(e.prompt, pr);
       if (h.zone) setT(e.zone, h.zone);
@@ -207,10 +218,9 @@
       const onFoot = !!h.onFoot;
       if (e.enterS) setT(e.enterS, h.enterLabel || (onFoot ? 'BİN' : 'İN'));
       if (e.actS) setT(e.actS, h.actLabel || 'ETKİLEŞ');
-      const b = this.body;
-      setC(b, 'near-car', onFoot && !!h.enterLabel);
-      setC(b, 'can-act', !!h.actLabel);
-      setC(b, 'mission', !!h.mission);
+      setB('near-car', onFoot && !!h.enterLabel);
+      setB('can-act', !!h.actLabel);
+      setB('mission', !!h.mission);
     },
 
     // dünya mesajı: 'big' ortada büyük; diğerleri (mis/cop/cash/good) geçici satır
@@ -252,7 +262,7 @@
       e.bigB.textContent = m.text;
       e.bigS.textContent = m.sub;
       e.big.className = 'world-only on ' + k + ((this._bigFlip = !this._bigFlip) ? ' a' : ' b');
-      e.big._con = true; e.big._coff = false;
+      e.big._con = true; // setC önbelleği className ile eşitlensin
       this._bigT = m.ms / 1000;
     },
 
@@ -468,12 +478,15 @@
       if (this.el && this.el.mapCv) this.el.mapCv.classList.remove('drag');
       this._closeScreen('map');
     },
-    // UI kaynaklı kapatma (düğme, Esc, kumanda): önce dünyaya bildir, dünya kapatmadıysa kendimiz kapatırız
-    requestClose(kind) {
+    // UI kaynaklı kapatma (düğme, Esc, kumanda): önce dünya yöntemi (varsayılan closeMap/closePhone/closeResult;
+    // 'retryMission' gibi başka bir yöntem de verilebilir), dünya kaplamayı kapatmadıysa kendimiz kapatırız.
+    // kind: 'map' | 'phone' | 'mresult'
+    requestClose(kind, method) {
       const W = this.world();
-      const m = kind === 'map' ? 'closeMap' : kind === 'phone' ? 'closePhone' : 'closeResult';
+      const own = kind === 'map' ? 'closeMap' : kind === 'phone' ? 'closePhone' : 'closeResult';
+      const m = method || own;
       try { if (W && typeof W[m] === 'function') W[m](); } catch (err) { console.error(err); }
-      if (DS.UI.current === kind) this[m]();
+      if (DS.UI.current === kind) this[own]();
     },
     _closeScreen(id) {
       const UI = DS.UI, g = this.g;
@@ -809,7 +822,8 @@
       try { ok = W && W.pickMission ? W.pickMission(id) : false; } catch (err) { console.error(err); ok = false; }
       if (ok === false && !W) return;
       if (ok === false) { DS.UI.toast('Bu iş şu an başlatılamıyor', 1600); return; }
-      if (DS.UI.current === 'phone') this.closePhone();
+      // dünya telefonu kendisi kapatmadıysa kapatma isteği (dünya bayrağı da güncellensin)
+      if (DS.UI.current === 'phone') this.requestClose('phone');
     },
     closePhone() { this._closeScreen('phone'); },
 
@@ -830,7 +844,7 @@
       let note = r.note || '';
       const rs = r.respect;
       if (rs && rs.delta) {
-        let nm = rs.crew;
+        let nm = CREW_N[rs.crew] || rs.crew;
         if (DS.CREWS) for (const c of DS.CREWS) if (c.id === rs.crew) nm = c.name;
         note += (note ? ' · ' : '') + nm + ' saygınlığı ' + (rs.delta > 0 ? '+' : '') + rs.delta;
       }

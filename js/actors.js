@@ -1,9 +1,11 @@
 'use strict';
 // Açık dünya aktör çizimi (DS.ActorSprites): NPC araçları, yayalar, zemin işaretleri, ok ve çakarlar.
-// - Araçlar: gövde + gölge tek "pişmiş" bitmapte (CarRender.build), çizimde tek drawImage.
+// - Araçlar: gövde + gölge tek "pişmiş" bitmapte (CarRender.paint doğrudan dar tuvale; kayıt ve
+//   rasterleştirme iki ayrı bütçe adımı), çizimde tek drawImage.
 // - GPU yolu: bileşik setTransform (M · T(x,y) · R(h)) + drawImage (drawParked deseni, save/restore yok).
 // - Yazılım (soft) yolu: önceden döndürülmüş kareler, tamsayı cihaz pikseline ölçeksiz blit; kareler
-//   tembel ve kare başına bütçeyle (actorBudgetMs) tek tek üretilir, bütçe yetmezse o çizim GPU yoluna düşer.
+//   tembel ve kare başına bütçeyle (actorBudgetMs) tek tek üretilir; kare yoksa önceki kovanın karesi
+//   ölçekli, o da yoksa o çizim GPU yoluna düşer.
 // - Yakınlaştırma kovası: kova ölçeği girildiği andaki gerçek yakınlık (zEff) ile sabitlenir, ±%8 dışına
 //   çıkınca yeni kova açılır; yakınlık oturunca kova o değere yeniden sabitlenir (sabit yakınlıkta ölçeksiz blit).
 // - Bayt sınırlı LRU önbellek (Q.spriteMB, dokunmatik cihazda yarısı).
@@ -14,17 +16,22 @@
   const TAU = Math.PI * 2;
   const MB = 1048576;
   const CAR_N = 64;                   // araç açı sayısı (yazılım yolu)
-  const PXP = 40;                     // yaya GPU kareleri: piksel/m
+  // yaya GPU kareleri (piksel/m): T2'de ekran en çok ~28 px/m (19 css px/m × dpr 1.5), T3'te ~38 (dpr 2)
+  const PXP_MID = 30, PXP_HIGH = 40;
   const PK = 1.5;                     // yaya büyütmesi (okunurluk)
   const HYST = Math.log(1.08);        // kova değişimi: kova ölçeğinden ±%8 sapma
   const SNAP = 0.02;                  // |zEff/zb − 1| bunun altındaysa ölçeksiz blit (≤ %2 boyut farkı, görünmez)
-  const SETTLE_N = 20, SETTLE_D = 0.002, REANCHOR = 0.01; // oturan yakınlıkta kovayı yeniden sabitle
+  // oturan yakınlıkta kovayı yeniden sabitle: 30 kare boyunca kare başına < %0.05 değişim ve kovadan > %1 fark
+  // (yavaş kayan yakınlık yeniden sabitlemeyi tekrar tekrar tetiklemesin)
+  const SETTLE_N = 30, SETTLE_D = 0.0005, REANCHOR = 0.01;
+  const OLD_KEEP = 90;                // kova değişince eski kareler bu kadar kare boyunca ölçekli yedek olarak kalır
   const MARGIN = 0.2;                 // pişmiş araç bitmap kenar payı (m): aynalar ve gölge kayması sığar
   const SHADOW = 'rgba(8,10,20,0.35)';
   const SIL = 'rgba(12,12,16,0.85)';  // yaya alt silueti
   const STAR = '#ffe14d', RING = '#ff8a1f', INK = '#16181c', BRAKE = '#ff2a2a';
   const WRECK_COL = '#262626';
   const RED_BAR = '#ff3030', BLUE_BAR = '#3a7bff';
+  const SIREN_R = 7;                  // çakar parlaması yarıçapı (m, ışık haritası)
   const now = () => performance.now();
 
   const POSE = DS.POSE || { IDLE: 0, WALK: 1, RUN: 2, FALL: 3, DOWN: 4, PUNCH: 5, GETIN: 6, WAVE: 7, PANIC: 8 };
@@ -32,8 +39,11 @@
   // DS.PED_PALETTES (vehicles.js) yoksa çökmemek için tek yedek palet
   const FALLBACK_PAL = [{ skin: '#e0b48c', shirt: '#ff8a1f', pants: '#22262e', hair: '#1b1410', cap: null, badge: false }];
 
-  // yapım türleri (süre tahmini için): 0 araç tabanı, 1 döndürülmüş araç karesi, 2 yaya karesi
-  const B_VEH = 0, B_CARF = 1, B_PED = 2;
+  // yapım türleri (süre tahmini için): 0 araç tabanı çizim kaydı, 1 araç tabanı rasterleştirme,
+  // 2 döndürülmüş araç karesi, 3 yaya karesi. Araç tabanı iki aşamada (ayrı bütçe kalemleri) hazırlanır.
+  const B_VEH = 0, B_VRAS = 1, B_CARF = 2, B_PED = 3;
+  const BUILD_K = 2;                  // karedeki ikinci ve sonraki yapımlar: tahminin 2 katı kalan bütçeye sığmalı
+  const MAX_BUILDS = 6;               // karede en fazla yapım (ölçülemeyen duraklamalara/GC'ye maruz kalan işi sınırlar)
 
   // yaya poz türleri (kare yuvaları)
   const K_WALK = 0, K_RUN = 1, K_IDLE = 2, K_PANIC = 3, K_WAVE = 4, K_PUNCH = 5, K_FALL = 6, K_DOWN = 7;
@@ -41,11 +51,17 @@
   const FALL_U = [0.3, 0.6, 0.85];
 
   // ---------------- yaya çizim tarifi (yapım anında, metre, +x = bakış yönü, büyütme öncesi) ----------------
-  // Parçalar: [x, y, rx, ry, açı, renkKodu] — renk 0 pantolon, 1 gömlek, 2 ten (el), 3 ten (baş)
-  const PARTS = [];
-  function add(x, y, rx, ry, a, c) { PARTS.push([x, y, rx, ry, a, c]); }
+  // Parçalar düz tipli dizide (tahsis yok): [x, y, rx, ry, açı, renkKodu] × NP
+  // renk 0 pantolon, 1 gömlek, 2 ten (el), 3 ten (baş); son parça baş, sondan ikinci gövde
+  const PT = new Float64Array(16 * 6);
+  let NP = 0;
+  function add(x, y, rx, ry, a, c) {
+    const o = NP * 6;
+    PT[o] = x; PT[o + 1] = y; PT[o + 2] = rx; PT[o + 3] = ry; PT[o + 4] = a; PT[o + 5] = c;
+    NP++;
+  }
   function pedParts(kind, u) {
-    PARTS.length = 0;
+    NP = 0;
     if (kind === K_FALL || kind === K_DOWN) {
       // devrilme: gövde -x yönünde uzar, kollar açılır, baş +x'te (yatarken ≈ 1.6 m)
       const t = u, L = U.lerp;
@@ -110,15 +126,16 @@
   }
 
   // birleşik yol için ayrı alt yol: elipsin başlangıç noktasından başla (araya çizgi girmesin)
-  function ellipseSub(g, p, grow) {
-    const rx = p[2] + grow;
-    g.moveTo(p[0] + rx * Math.cos(p[4]), p[1] + rx * Math.sin(p[4]));
-    g.ellipse(p[0], p[1], rx, p[3] + grow, p[4], 0, TAU);
+  function ellipseSub(g, i, grow) {
+    const o = i * 6, rx = PT[o + 2] + grow, a = PT[o + 4];
+    g.moveTo(PT[o] + rx * Math.cos(a), PT[o + 1] + rx * Math.sin(a));
+    g.ellipse(PT[o], PT[o + 1], rx, PT[o + 3] + grow, a, 0, TAU);
   }
   // g: dönüşümü (döndürme · ölçek · PK) kurulmuş bağlam; grow: siluet büyütmesi (büyütme öncesi m)
-  function paintPed(g, P, kind, u, grow, flash) {
+  function paintPed(g, set, kind, u, grow, flash) {
+    const P = set.P;
     const lying = pedParts(kind, u);
-    const head = PARTS[PARTS.length - 1], hx = head[0];
+    const hx = PT[(NP - 1) * 6];
     // temas gölgesi
     g.fillStyle = '#000000'; g.globalAlpha = 0.25;
     g.beginPath(); g.ellipse(U.lerp(0.05, 0.0, lying), 0.05, U.lerp(0.3, 0.66, lying), 0.36, 0, 0, TAU); g.fill();
@@ -126,34 +143,33 @@
     // tek koyu alt siluet (tüm parçaların birleşimi, ~1 cihaz pikseli büyütülmüş)
     g.fillStyle = SIL;
     g.beginPath();
-    for (let i = 0; i < PARTS.length; i++) ellipseSub(g, PARTS[i], grow);
+    for (let i = 0; i < NP; i++) ellipseSub(g, i, grow);
     g.fill();
     if (flash) {
       // vuruş parlaması: beyaz siluet
       g.fillStyle = '#ffffff';
       g.beginPath();
-      for (let i = 0; i < PARTS.length; i++) ellipseSub(g, PARTS[i], 0);
+      for (let i = 0; i < NP; i++) ellipseSub(g, i, 0);
       g.fill();
       return;
     }
-    const cols = [P.pants, P.shirt, P.skin, P.skin];
-    for (let i = 0; i < PARTS.length; i++) {
-      const p = PARTS[i];
-      g.fillStyle = cols[p[5]];
-      g.beginPath(); g.ellipse(p[0], p[1], p[2], p[3], p[4], 0, TAU); g.fill();
+    const cols = set.cols;
+    for (let i = 0; i < NP; i++) {
+      const o = i * 6;
+      g.fillStyle = cols[PT[o + 5]];
+      g.beginPath(); g.ellipse(PT[o], PT[o + 1], PT[o + 2], PT[o + 3], PT[o + 4], 0, TAU); g.fill();
     }
     // omuz parlaklığı
     if (!lying) {
-      const body = PARTS[PARTS.length - 2];
       g.fillStyle = '#ffffff'; g.globalAlpha = 0.22;
-      g.beginPath(); g.ellipse(body[0] + 0.04, -0.06, 0.07, 0.14, 0, 0, TAU); g.fill();
+      g.beginPath(); g.ellipse(PT[(NP - 2) * 6] + 0.04, -0.06, 0.07, 0.14, 0, 0, TAU); g.fill();
       g.globalAlpha = 1;
     }
     // saç / şapka
     if (P.cap) {
       g.fillStyle = P.cap;
       g.beginPath(); g.arc(hx - 0.01, 0, 0.112, 0, TAU); g.fill();
-      g.fillStyle = U.shade(P.cap, -0.3);
+      g.fillStyle = set.capDark;
       g.fillRect(hx + 0.05, -0.075, 0.09, 0.15);   // siper (öne)
       if (P.badge) { g.fillStyle = '#f4f1ea'; g.beginPath(); g.arc(hx - 0.02, 0, 0.034, 0, TAU); g.fill(); }
     } else if (lying) {
@@ -177,20 +193,46 @@
         this.pset = [];               // palet indeksi -> yaya kümesi
         this.pobj = new Map();        // palet nesnesi -> yaya kümesi
         this.bytes = 0; this.nFrames = 0; this.built = 0; this.fno = 0;
-        this.buildMs = 0; this.maxBuildMs = 0; this._bud = 0;
-        this.est = new Float64Array([1.2, 0.35, 0.15]); // yapım süresi tahmini (ms; tepe, yavaş söner)
+        this.buildMs = 0; this.maxBuildMs = 0; this._bud = 0; this._nb = 0;
+        // yapım süresi tahmini (ms): tepe izler, yavaş söner; temkinli başlar (yavaş makinede ilk kareler bütçeyi aşmasın)
+        this.est = new Float64Array([1, 1, 1, 1]);
         this.prerot = false; this.budget = 2; this.maxBytes = 14 * MB;
-        this.pedF = 4; this.pedA = 16; this.tier = 0;
+        this.pedF = 4; this.pedA = 16; this.tier = 0; this.pxp = PXP_MID;
         this.zb = 0; this.zs = 1; this.zEff = 1; this.zPrev = 0; this.zStable = 0; this.rot = 0;
         this.m0 = 1; this.m1 = 0; this.m2 = 0; this.m3 = 1; this.m4 = 0; this.m5 = 0;
         this.cw = 1; this.ch = 1;
         this._gR = null; this._gB = null;
         this._tc = null;              // 1×1 dokunma tuvali (yeni kareyi yapım süresi içinde rasterleştirir)
+        this._tcN = 0;                // bu kayıttaki dokunma sayısı
         this._layout();
+        this._warm();
       }
       // patlama/hasar dumanı atlasları ilk kullanımda takılmasın
       const S = DS.Sprites;
       if (S && S.puffs && S.prewarm) S.prewarm(['#3a3a3a', '#d6dde6']);
+    },
+
+    // İlk kullanımda takılma olmasın: çizim kodları bir kez 1×1 tuvale çalıştırılıp derletilir
+    // (rasterleştirilmez; oyun içinde ilk araç/yaya yapımı bütçeyi aşmasın). Yalnızca ilk init'te.
+    _warm() {
+      try {
+        const g = U.canvas(1, 1).getContext('2d');
+        const pals = DS.PED_PALETTES && DS.PED_PALETTES.length ? DS.PED_PALETTES : FALLBACK_PAL;
+        const set = this._newPedSet(pals[pals.length > 1 ? 1 : 0]);
+        g.setTransform(10, 0, 0, 10, 0, 0);
+        paintPed(g, set, K_WALK, 0.25, 0.05, false);
+        paintPed(g, set, K_PANIC, 0.5, 0.05, false);
+        paintPed(g, set, K_FALL, 0.6, 0.05, true);
+        const CR = DS.CarRender, defs = DS.VEHICLES && DS.VEHICLES.length ? DS.VEHICLES : DS.CARS;
+        if (CR && CR.paint && defs && defs.length) {
+          const st = { color: '#f4f6f8', livery: 'polis', wing: false, rim: '#b8b8b8', bar: true, sign: true };
+          CR.paint(g, defs[0], st);
+          st.livery = 'taksi'; st.color = '#ffc400';
+          CR.paint(g, defs[0], st);
+        }
+      } catch (e) {
+        // ısınma isteğe bağlı; hata oyunu etkilemesin
+      }
     },
 
     // Kalite: prerot = Q.prerot || soft; bütçe Q.actorBudgetMs; LRU Q.spriteMB (dokunmatikte yarısı)
@@ -203,10 +245,11 @@
       this.tier = Q.tier | 0;
       const F = Q.pedFrames === 8 ? 8 : 4;
       const A = Q.pedAngles > 0 ? Q.pedAngles | 0 : 16;
-      if (F !== this.pedF || A !== this.pedA) {
-        // kare yerleşimi değişti: yaya önbellekleri geçersiz
+      const pxp = this.tier >= 3 ? PXP_HIGH : PXP_MID;
+      if (F !== this.pedF || A !== this.pedA || pxp !== this.pxp) {
+        // kare yerleşimi ya da GPU kare çözünürlüğü değişti: yaya önbellekleri geçersiz
         this._dropPeds();
-        this.pedF = F; this.pedA = A;
+        this.pedF = F; this.pedA = A; this.pxp = pxp;
         this._layout();
       }
       if (prerot !== this.prerot) {
@@ -233,12 +276,16 @@
         if (++this.zStable >= SETTLE_N && Math.abs(zz / this.zb - 1) > REANCHOR) { this.zb = zz; this.zStable = 0; }
       } else this.zStable = 0;
       this.zPrev = zz;
-      const zs = zz / this.zb;
-      this.zs = zs > 1 - SNAP && zs < 1 + SNAP ? 1 : zs;
+      this.zs = this._snap(zz / this.zb);
       this._bud = this.budget;
-      this.buildMs = 0;
+      this.buildMs = 0; this._nb = 0;
       this.fno++;
+      // dokunma tuvalinin kaydını at (genişlik ataması tuvali ve bekleyen kaydı sıfırlar; ucuz)
+      if (this._tcN > 0) { this._tc.canvas.width = 1; this._tcN = 0; }
     },
+
+    // ölçek oranı ≤ %2 farklıysa ölçeksiz blit (görünmez boyut farkı, 4 kat ucuz)
+    _snap(q) { return q > 1 - SNAP && q < 1 + SNAP ? 1 : q; },
 
     // ================= ARAÇLAR =================
     _vehEntry(veh) {
@@ -256,13 +303,22 @@
           e = this._buildVeh(key, def, st, wreck);
         }
       }
+      if (!e.ready) {
+        // ikinci aşama: rasterleştirme (bütçe kalırsa aynı karede, yoksa sonraki karelerde)
+        if (!this._can(B_VRAS)) return null;
+        const t0 = now();
+        this._touch(e.c);
+        e.ready = true;
+        this._spent(t0, B_VRAS);
+      }
       return e;
     },
 
+    // Birinci aşama: gölge + gövde doğrudan dar (snug) tuvale çizilir (ara tuval ve yeniden örnekleme yok);
+    // yalnızca çizim kaydı yapılır, rasterleştirme ikinci aşamada (_vehEntry) bütçeyle.
     _buildVeh(key, def, st, wreck) {
       const t0 = now();
       const s2 = wreck ? { color: WRECK_COL, livery: 'none', wing: !!st.wing, bar: !!st.bar, sign: false, rim: '#3a3a3a' } : st;
-      const spr = DS.CarRender.build(def, s2);
       const PX = DS.CarRender.PX;
       const L = def.len, Wd = def.wid;
       // tuval boyutu tam piksel: merkez tam olarak pw/2, ph/2
@@ -271,7 +327,7 @@
       g.setTransform(PX, 0, 0, PX, pw / 2, ph / 2);
       g.fillStyle = SHADOW;
       g.fillRect(-L / 2 + 0.1, -Wd / 2 + 0.05, L, Wd);
-      g.drawImage(spr.c, -spr.w / 2, -spr.h / 2, spr.c.width / PX, spr.c.height / PX);
+      DS.CarRender.paint(g, def, s2);
       if (wreck) {
         // kömürleşmiş kabuk: %30 siyah örtü (yalnızca dolu piksellere)
         g.setTransform(1, 0, 0, 1, 0, 0);
@@ -279,14 +335,12 @@
         g.globalAlpha = 0.3; g.fillStyle = '#000000'; g.fillRect(0, 0, pw, ph);
         g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
       }
-      this._touch(c);
-      spr.c.width = 0; // ara tuval artık gerekmez
       const bw = pw / PX, bh = ph / PX;
       const e = {
         key, kind: 0, def, col: st.color, liv: st.livery, bar: !!st.bar, sign: !!st.sign, wing: !!st.wing, wreck,
-        c, w: bw, h: bh,
+        c, w: bw, h: bh, ready: false,
         hl: L / 2, hr: (Wd / 2) * (def.shape ? def.shape.taperR : 1),
-        bytes: pw * ph * 4, used: this.fno, rs: null,
+        bytes: pw * ph * 4, used: this.fno, rs: null, ro: null, roF: 0,
       };
       this.vmap.set(key, e);
       this.bytes += e.bytes;
@@ -295,16 +349,13 @@
       return e;
     },
 
+    // Yeni kova: mevcut kareler "eski küme" olur (yenileri kurulana dek ölçekli çizilir; GPU yoluna düşüp
+    // yavaşlamasın), daha eski küme bırakılır. Kova değişimi seyrek: küçük tahsis kabul edilir.
     _rotSet(e) {
-      let rs = e.rs;
-      if (rs !== null) {
-        // eski kova: kareleri bırak, diziyi yeniden kullan
-        this._freeRot(rs);
-        rs.zb = this.zb;
-      } else {
-        rs = e.rs = { zb: this.zb, f: new Array(CAR_N).fill(null), bytes: 0, n: 0 };
-      }
-      return rs;
+      if (e.ro !== null) { this._freeRot(e.ro); e.ro = null; }
+      if (e.rs !== null && e.rs.n > 0) { e.ro = e.rs; e.roF = this.fno; }
+      e.rs = { zb: this.zb, f: new Array(CAR_N).fill(null), bytes: 0, n: 0 };
+      return e.rs;
     },
     _freeRot(rs) {
       const f = rs.f;
@@ -354,11 +405,14 @@
         let k = Math.round(((veh.h + this.rot) * CAR_N) / TAU) % CAR_N;
         if (k < 0) k += CAR_N;
         const rs = e.rs !== null && e.rs.zb === this.zb ? e.rs : this._rotSet(e);
-        let fr = rs.f[k];
+        let fr = rs.f[k], zs = this.zs;
         if (fr === null && this._can(B_CARF)) fr = this._buildCarFrame(e, rs, k);
+        if (e.ro !== null) {
+          if (this.fno - e.roF > OLD_KEEP) { this._freeRot(e.ro); e.ro = null; }
+          else if (fr === null && e.ro.f[k] !== null) { fr = e.ro.f[k]; zs = this._snap(this.zEff / e.ro.zb); }
+        }
         if (fr !== null) {
           ctx.setTransform(1, 0, 0, 1, 0, 0);
-          const zs = this.zs;
           if (zs === 1) {
             ctx.drawImage(fr, (sx - fr.width / 2 + 0.5) | 0, (sy - fr.height / 2 + 0.5) | 0);
           } else {
@@ -423,7 +477,8 @@
       return ph - Math.floor(ph) < 0.5;
     },
 
-    // Işık haritası: 7 m kırmızı/mavi 3 Hz yanıp sönen parlama (tek sprite)
+    // Işık haritası: 7 m yarıçaplı kırmızı/mavi 3 Hz yanıp sönen parlama (tek sprite; yumuşak parlama
+    // dokusunun yoğun çekirdeği ~%45 yarıçapta biter, sokağı boyaması için yarıçap 7 m)
     drawSiren(lctx, veh, t) {
       if (!this._glows()) return;
       const rx = DS.CarRender.roofX(veh.def);
@@ -432,7 +487,7 @@
       lctx.translate(veh.x, veh.y);
       lctx.rotate(veh.h);
       lctx.globalAlpha = 0.95;
-      lctx.drawImage(red ? this._gR : this._gB, rx - 3.5, (red ? -0.3 : 0.3) - 3.5, 7, 7);
+      lctx.drawImage(red ? this._gR : this._gB, rx - SIREN_R, (red ? -0.3 : 0.3) - SIREN_R, SIREN_R * 2, SIREN_R * 2);
       lctx.globalAlpha = 1;
       lctx.restore();
     },
@@ -491,7 +546,10 @@
       return set;
     },
     _newPedSet(P) {
-      return { kind: 1, P, base: new Array(this.nS * 2).fill(null), rs: null, bytes: 0, n: 0, used: this.fno };
+      return {
+        kind: 1, P, cols: [P.pants, P.shirt, P.skin, P.skin], capDark: P.cap ? U.shade(P.cap, -0.3) : null,
+        base: new Array(this.nS * 2).fill(null), rs: null, ro: null, roF: 0, bytes: 0, n: 0, used: this.fno,
+      };
     },
     _buildPedFrame(set, slot, zpx, ang) {
       const t0 = now();
@@ -503,7 +561,7 @@
       const k = zpx * PK, ca = Math.cos(ang) * k, sa = Math.sin(ang) * k;
       g.setTransform(ca, sa, -sa, ca, S / 2, S / 2);
       // alt siluet yaklaşık 1 cihaz pikseli büyür
-      paintPed(g, set.P, kind, u, Math.max(1 / k, 0.02), flash);
+      paintPed(g, set, kind, u, Math.max(1 / k, 0.02), flash);
       this._touch(c);
       const b = S * S * 4;
       set.bytes += b; set.n++; this.bytes += b; this.nFrames++;
@@ -544,11 +602,17 @@
         let rs = set.rs;
         if (rs === null || rs.zb !== this.zb) rs = this._pedRot(set);
         const idx = slot * A + k;
-        let fr = rs.f[idx];
-        if (fr === null && this._can(B_PED)) fr = rs.f[idx] = this._buildPedFrame(set, slot, this.zb, (k * TAU) / A);
+        let fr = rs.f[idx], zs = this.zs;
+        if (fr === null && this._can(B_PED)) { fr = rs.f[idx] = this._buildPedFrame(set, slot, this.zb, (k * TAU) / A); rs.n++; }
+        const ro = set.ro;
+        if (ro !== null) {
+          // önceki kovanın kareleri: yenisi kurulana dek ölçekli yedek
+          if (this.fno - set.roF > OLD_KEEP) { this._freePedRS(set, ro); set.ro = null; }
+          else if (fr === null && ro.f.length === rs.f.length && ro.f[idx] !== null) { fr = ro.f[idx]; zs = this._snap(this.zEff / ro.zb); }
+        }
         if (fr !== null) {
           ctx.setTransform(1, 0, 0, 1, 0, 0);
-          const zs = this.zs * sc;
+          zs *= sc;
           if (zs === 1) {
             ctx.drawImage(fr, (sx - fr.width / 2 + 0.5) | 0, (sy - fr.height / 2 + 0.5) | 0);
           } else {
@@ -568,31 +632,25 @@
           ctx.fillRect(x - 0.3, y - 0.3, 0.6, 0.6);
           return;
         }
-        fr = set.base[slot] = this._buildPedFrame(set, slot, PXP, 0);
+        fr = set.base[slot] = this._buildPedFrame(set, slot, this.pxp, 0);
       }
       const co = Math.cos(h) * sc, si = Math.sin(h) * sc;
       ctx.setTransform(m0 * co + m2 * si, m1 * co + m3 * si, m2 * co - m0 * si, m3 * co - m1 * si, sx, sy);
-      const half = fr.width / PXP / 2;
+      const half = fr.width / this.pxp / 2;
       ctx.drawImage(fr, -half, -half, half * 2, half * 2);
     },
+    // Yeni kova (araçlardaki gibi): mevcut küme eski küme olur, daha eskisi bırakılır
     _pedRot(set) {
-      const n = this.nS * 2 * this.pedA;
-      let rs = set.rs;
-      if (rs !== null) {
-        this._freePedRot(set);
-        if (rs.f.length !== n) rs.f = new Array(n).fill(null);
-        rs.zb = this.zb;
-      } else {
-        rs = set.rs = { zb: this.zb, f: new Array(n).fill(null) };
-      }
-      return rs;
+      if (set.ro !== null) { this._freePedRS(set, set.ro); set.ro = null; }
+      if (set.rs !== null && set.rs.n > 0) { set.ro = set.rs; set.roF = this.fno; }
+      set.rs = { zb: this.zb, f: new Array(this.nS * 2 * this.pedA).fill(null), n: 0 };
+      return set.rs;
     },
-    _freePedRot(set) {
-      const rs = set.rs;
-      if (rs === null) return;
+    _freePedRS(set, rs) {
       const f = rs.f;
       let b = 0, c = 0;
       for (let i = 0; i < f.length; i++) if (f[i] !== null) { b += f[i].width * f[i].height * 4; c++; f[i].width = 0; f[i] = null; }
+      rs.n = 0;
       set.bytes -= b; set.n -= c; this.bytes -= b; this.nFrames -= c;
     },
 
@@ -707,24 +765,30 @@
     },
 
     // ================= ÖNBELLEK =================
-    // Yapıma izin: bütçe kaldıysa ve (karede ilk yapımsa ya da tahmini süre kalan bütçeye sığıyorsa)
+    // Yapıma izin: bütçe kaldıysa ve (karede ilk yapımsa ya da tahminin BUILD_K katı kalan bütçeye sığıyorsa).
+    // Pay tahminle orantılı: yavaş makinede (tek yapım ~1 ms) karede genellikle tek yapım, hızlıda birkaç tane;
+    // zamanlayıcı/GC gürültüsü kareyi bütçenin çok üstüne taşımaz. İlk yapım her zaman: ilerleme garanti.
     _can(kind) {
       const b = this._bud;
-      return b > 0 && (this.buildMs === 0 || this.est[kind] <= b);
+      return b > 0 && this._nb < MAX_BUILDS && (this.buildMs === 0 || BUILD_K * this.est[kind] <= b);
     },
     _spent(t0, kind) {
       const d = now() - t0;
-      this._bud -= d; this.buildMs += d; this.built++;
+      this._bud -= d; this.buildMs += d; this.built++; this._nb++;
       if (this.buildMs > this.maxBuildMs) this.maxBuildMs = this.buildMs;
-      // tepe izleyen tahmin: yavaş yapımlar hemen, hızlananlar yavaşça yansır
-      const e = this.est[kind] * 0.9;
+      // tepe izleyen tahmin: yavaş yapımlar hemen, hızlananlar yavaşça yansır (zamanlayıcı/GC gürültüsü
+      // tek tek ölçümleri iki kümeli yapar; yavaş sönüm, ucuz ölçüm dizilerinin tahmini çökertmesini önler)
+      const e = this.est[kind] * 0.97;
       this.est[kind] = d > e ? d : e;
     },
     // Yeni karenin çizim kaydını yapım süresi içinde rasterleştir (ertelenmiş çizimin maliyeti ilk blite kaymasın)
+    // Anlık görüntü alınırken kaynak tuval rasterleştirilir; 1×1 tuvalin kaydı her karede sıfırlanır
+    // (kayıt, dokunulan her karenin görüntüsünü tutar: LRU'nun bıraktığı kareler bellekte kalmasın)
     _touch(c) {
       let g = this._tc;
       if (g === null) g = this._tc = U.canvas(1, 1).getContext('2d');
       g.drawImage(c, 0, 0, 1, 1);
+      this._tcN++;
     },
     // En uzun süredir kullanılmayan girişten başlayarak: önce döndürülmüş kareler, sonra bütünü
     _evict() {
@@ -740,16 +804,19 @@
         for (const s of this.pobj.values()) if (s.n > 0 && s.used < this.fno && s.used < bu) { bu = s.used; best = s; }
         if (best === null) break;
         if (best.kind === 0) {
-          if (best.rs !== null && best.rs.n > 0) this._freeRot(best.rs);
+          // araç: önce eski kova, sonra döndürülmüş kareler, en son taban sprite
+          if (best.ro !== null) { this._freeRot(best.ro); best.ro = null; }
+          else if (best.rs !== null && best.rs.n > 0) this._freeRot(best.rs);
           else { this.vmap.delete(best.key); this.bytes -= best.bytes; best.c.width = 0; best.rs = null; }
         } else this._freePedSet(best);
       }
     },
     _freePedSet(s) {
       for (let i = 0; i < s.base.length; i++) if (s.base[i] !== null) { s.base[i].width = 0; s.base[i] = null; }
-      if (s.rs !== null) { const f = s.rs.f; for (let i = 0; i < f.length; i++) if (f[i] !== null) { f[i].width = 0; f[i] = null; } }
+      if (s.rs !== null) this._freePedRS(s, s.rs);
+      if (s.ro !== null) this._freePedRS(s, s.ro);
       this.bytes -= s.bytes; this.nFrames -= s.n;
-      s.bytes = 0; s.n = 0; s.rs = null;
+      s.bytes = 0; s.n = 0; s.rs = null; s.ro = null;
       // küme dizide kalır (boş); sonraki kullanımda kareler yeniden üretilir
     },
     _dropPeds() {
@@ -758,22 +825,30 @@
       this.pset = []; this.pobj = new Map();
     },
     _dropRot() {
-      for (const e of this.vmap.values()) if (e.rs !== null) { this._freeRot(e.rs); e.rs = null; }
-      for (let i = 0; i < this.pset.length; i++) {
-        const s = this.pset[i];
-        if (s !== undefined) { this._freePedRot(s); s.rs = null; }
+      for (const e of this.vmap.values()) {
+        if (e.rs !== null) { this._freeRot(e.rs); e.rs = null; }
+        if (e.ro !== null) { this._freeRot(e.ro); e.ro = null; }
       }
-      for (const s of this.pobj.values()) { this._freePedRot(s); s.rs = null; }
+      const drop = (st) => {
+        if (st.rs !== null) { this._freePedRS(st, st.rs); st.rs = null; }
+        if (st.ro !== null) { this._freePedRS(st, st.ro); st.ro = null; }
+      };
+      for (let i = 0; i < this.pset.length; i++) if (this.pset[i] !== undefined) drop(this.pset[i]);
+      for (const st of this.pobj.values()) drop(st);
     },
 
     // contextrestored sonrası: tüm önbellekler tembelce yeniden kurulur
     clear() {
       if (!this._ready) { this.init(); return; }
-      for (const e of this.vmap.values()) { e.c.width = 0; if (e.rs !== null) this._freeRot(e.rs); }
+      for (const e of this.vmap.values()) {
+        e.c.width = 0;
+        if (e.rs !== null) this._freeRot(e.rs);
+        if (e.ro !== null) this._freeRot(e.ro);
+      }
       this.vmap.clear();
       this._dropPeds();
       this.bytes = 0; this.nFrames = 0;
-      this._gR = null; this._gB = null; this._tc = null;
+      this._gR = null; this._gB = null; this._tc = null; this._tcN = 0;
       this.zb = 0; this.zPrev = 0; this.zStable = 0;
     },
 

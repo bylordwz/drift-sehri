@@ -359,9 +359,13 @@ body.world #msgs { top: calc(40% + var(--sat)); }
 .w-bar.car i { background: var(--cyan); }
 .w-bar.car.mid i { background: var(--sodium); }
 .w-bar.car.low i { background: #ff6a3d; }
-#w-bust { display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; color: #9ec1ff; }
-#w-bust b { position: relative; width: 84px; height: 7px; background: rgba(10, 13, 20, 0.6); overflow: hidden; }
-#w-bust b i { position: absolute; inset: 0; transform-origin: left; transform: scaleX(0); background: linear-gradient(90deg, #2a6bff, #ff2a2a); }
+/* kelepçe (tutuklanma) çubuğu: etiket çubuğun solunda */
+#w-bust { width: 84px; height: 8px; overflow: visible; border-color: rgba(158, 193, 255, 0.5); }
+#w-bust::before {
+  content: 'KELEPÇE'; position: absolute; right: calc(100% + 6px); top: 50%; transform: translateY(-50%);
+  font-size: 10px; font-weight: 700; letter-spacing: 0.08em; line-height: 1; color: #9ec1ff; white-space: nowrap;
+}
+#w-bust i { transform: scaleX(0); background: linear-gradient(90deg, #2a6bff, #ff2a2a); }
 .w-row { display: flex; gap: 8px; align-items: baseline; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
 #w-bounty { color: var(--sodium); }
 #w-clock { color: var(--chalk); opacity: 0.85; }
@@ -395,6 +399,7 @@ body.world #msgs { top: calc(40% + var(--sat)); }
 #w-big.good b { color: var(--mint); }
 #w-big.mis b { color: var(--sodium); }
 #w-big.cash b { color: var(--mint); }
+#w-big.fail b { color: #ff8a5c; }
 
 /* bağlam ipucu ("F — Bin") */
 #w-prompt {
@@ -514,7 +519,11 @@ body.world .pad-gears { right: auto; left: calc(14px + var(--sal)); bottom: calc
   #w-obj-t { font-size: 13px; }
   #ctl-horn { bottom: calc(138px + var(--sab)); }
   #ctl-map { right: calc(112px + var(--sar)); }
-  #w-prompt { bottom: calc(256px + var(--sab)); }
+  #w-prompt { bottom: calc(296px + var(--sab)); }
+  /* dikeyde sağ üst blok HARİTA'nın altına iner: drift kutusu ve büyük mesaj onun altında, uyarı düğmelerin üstünde */
+  body.world #drift { top: calc(214px + var(--sat)); }
+  #w-big { top: calc(34% + var(--sat)); }
+  body.world #toast { bottom: calc(340px + var(--sab)); }
   body.world .pad-gears { bottom: calc(200px + var(--sab)); }
   #map-legend .lg { padding: 6px 9px; font-size: 12px; }
   .map-hint { display: none; }
@@ -526,6 +535,7 @@ body.world .pad-gears { right: auto; left: calc(14px + var(--sal)); bottom: calc
   #w-stars { height: 17px; }
   #w-stars i { width: 17px; height: 17px; }
   #w-prompt { bottom: calc(150px + var(--sab)); }
+  #w-big { top: calc(28% + var(--sat)); }
   .map-hint { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
