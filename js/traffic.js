@@ -806,7 +806,8 @@
         if (dx * c + dy * s <= 0) continue;
         if (Math.abs(-dx * s + dy * c) > 12) continue;
         if (Math.abs(wrapA(L.h - h)) > 0.6) continue;
-        if (v.pullT <= 0) v._pullLat = v._passRem <= 0 && this._latClear(v, L, PULL_LAT, v.s - v._len - 4, v.s + v._len + 6, 3) ? PULL_LAT : 0;
+        // yanal açıklık: şimdiki yerinden duracağı yere dek (−3.5 m/s² ile durma yolu dahil)
+        if (v.pullT <= 0) v._pullLat = v._passRem <= 0 && this._latClear(v, L, PULL_LAT, v.s - v._len - 4, v.s + v._len + 6 + (v.v * v.v) / 7, 3) ? PULL_LAT : 0;
         v.pullT = 3;
       }
     }
