@@ -64,6 +64,9 @@
       this.roundabouts = [[3, 3], [6, 6]];
       this.Q = DS.Quality.TIERS[2];
       this.nid = 1;
+      this.parked = [];          // park araçları (alçak prop + kutu bağlı; çalınabilir)
+      this._worldEdits = false;  // açık şehir düzenlemeleri uygulandı mı
+      this._nGone = 0;           // alınmış (gone) park aracı sayısı
 
       this._layout();
       this._roads();
@@ -98,7 +101,8 @@
 
     // ---------- kayıt yardımcıları ----------
     addBox(x0, y0, x1, y1, kind) {
-      const b = { x0, y0, x1, y1, kind, id: this.nid++, q: 0 };
+      // off: devre dışı (alınmış park aracı), ref: bağlı alçak prop — tek gizli sınıf için baştan tanımlı
+      const b = { x0, y0, x1, y1, kind, id: this.nid++, q: 0, off: false, ref: null };
       this.boxes.push(b);
       return b;
     }
@@ -394,8 +398,10 @@
             const L = def.len * 0.98, Wd = def.wid;
             const cxp = x + stallW / 2, cyp = (row.y0 + row.y1) / 2 + (R() - 0.5) * 0.3;
             const ang = row.face > 0 ? Math.PI / 2 : -Math.PI / 2;
-            this.addLow({ kind: 'car', x: cxp, y: cyp, ang: ang + (R() - 0.5) * 0.06, v: vi, r: 3 });
-            this.addBox(cxp - Wd / 2, cyp - L / 2, cxp + Wd / 2, cyp + L / 2, 'car');
+            // R() sırası korunur: ang içindeki R(), addBox'tan önce değerlendirilir
+            const lp = this.addLow({ kind: 'car', x: cxp, y: cyp, ang: ang + (R() - 0.5) * 0.06, v: vi, r: 3 });
+            lp.box = this.addBox(cxp - Wd / 2, cyp - L / 2, cxp + Wd / 2, cyp + L / 2, 'car');
+            lp.box.ref = lp; this.parked.push(lp);
           }
         }
         this.marks.push({ x0: x0 - 0.06, x1: x0 + 0.06, y0: row.y0, y1: row.y1, col: 'w', r: 0 });
@@ -539,19 +545,21 @@
     }
 
     // ---------- ızgaralar ----------
-    _index() {
-      const put = (map, cell, x0, y0, x1, y1, key, o) => {
-        const ax = Math.floor(x0 / cell), bx = Math.floor(x1 / cell);
-        const ay = Math.floor(y0 / cell), by = Math.floor(y1 / cell);
-        for (let i = ax; i <= bx; i++) {
-          for (let j = ay; j <= by; j++) {
-            const k = i * 4096 + j;
-            let c = map.get(k);
-            if (!c) { c = { b: [], c: [], l: [], t: [], m: [], d: [] }; map.set(k, c); }
-            c[key].push(o);
-          }
+    // Izgara hücrelerine kayıt (_index ve çalışma zamanı eklemeleri ortak kullanır)
+    _putGrid(map, cell, x0, y0, x1, y1, key, o) {
+      const ax = Math.floor(x0 / cell), bx = Math.floor(x1 / cell);
+      const ay = Math.floor(y0 / cell), by = Math.floor(y1 / cell);
+      for (let i = ax; i <= bx; i++) {
+        for (let j = ay; j <= by; j++) {
+          const k = i * 4096 + j;
+          let c = map.get(k);
+          if (!c) { c = { b: [], c: [], l: [], t: [], m: [], d: [] }; map.set(k, c); }
+          c[key].push(o);
         }
-      };
+      }
+    }
+    _index() {
+      const put = (map, cell, x0, y0, x1, y1, key, o) => this._putGrid(map, cell, x0, y0, x1, y1, key, o);
       for (const b of this.boxes) put(this.cgrid, CELL, b.x0, b.y0, b.x1, b.y1, 'b', b);
       for (const c of this.circs) put(this.cgrid, CELL, c.x - c.r, c.y - c.r, c.x + c.r, c.y + c.r, 'c', c);
       for (const p of this.low) { p.q = 0; put(this.dgrid, DCELL, p.x - p.r, p.y - p.r, p.x + p.r, p.y + p.r, 'l', p); }
@@ -568,7 +576,7 @@
         for (let j = ay; j <= by; j++) {
           const c = this.cgrid.get(i * 4096 + j);
           if (!c) continue;
-          for (const b of c.b) { if (b.q !== q) { b.q = q; if (b.x1 >= x0 && b.x0 <= x1 && b.y1 >= y0 && b.y0 <= y1) fn('b', b); } }
+          for (const b of c.b) { if (b.off) continue; if (b.q !== q) { b.q = q; if (b.x1 >= x0 && b.x0 <= x1 && b.y1 >= y0 && b.y0 <= y1) fn('b', b); } }
           for (const o of c.c) { if (o.q !== q) { o.q = q; fn('c', o); } }
         }
       }
@@ -743,6 +751,89 @@
         else if (!col.broken && Math.hypot(x - col.x, y - col.y) < r + col.r) hit = true;
       });
       return hit;
+    }
+
+    // ---------- park araçları (açık şehir: çalma) ----------
+    takeParked(p) { if (!p.gone) this._nGone++; p.gone = true; if (p.box) p.box.off = true; }
+    restoreParked(p) { if (p.gone) this._nGone--; p.gone = false; if (p.box) p.box.off = false; }
+    // dünya modundan çıkarken: kalıcı kaldırılanlar (p.perm, güvenli ev) geri gelmez
+    restoreAllParked() {
+      const list = this.parked;
+      for (let i = 0; i < list.length; i++) { const p = list[i]; if (p.gone && !p.perm) this.restoreParked(p); }
+    }
+    // (x,y)'ye kutusu r'den yakın, alınmamış park araçlarını out'a yazar; sayı döner (tahsis yok)
+    parkedNear(x, y, r, out) {
+      out.length = 0;
+      const q = ++this.qid;
+      const ax = Math.floor((x - r) / CELL), bx = Math.floor((x + r) / CELL);
+      const ay = Math.floor((y - r) / CELL), by = Math.floor((y + r) / CELL);
+      for (let i = ax; i <= bx; i++) {
+        for (let j = ay; j <= by; j++) {
+          const c = this.cgrid.get(i * 4096 + j);
+          if (!c) continue;
+          const arr = c.b;
+          for (let k = 0; k < arr.length; k++) {
+            const b = arr[k];
+            if (b.off || b.q === q) continue;
+            b.q = q;
+            if (b.kind !== 'car' || !b.ref || b.ref.gone) continue;
+            if (U.distPointBox(x, y, b.x0, b.y0, b.x1, b.y1) <= r) out.push(b.ref);
+          }
+        }
+      }
+      return out.length;
+    }
+
+    // ---------- çalışma zamanı eklemeleri (ızgaralara da kaydedilir) ----------
+    addRuntimeBox(x0, y0, x1, y1, kind) {
+      const b = this.addBox(x0, y0, x1, y1, kind);
+      this._putGrid(this.cgrid, CELL, x0, y0, x1, y1, 'b', b);
+      return b;
+    }
+    addRuntimeCirc(x, y, r, kind) {
+      const c = this.addCirc(x, y, r, kind);
+      this._putGrid(this.cgrid, CELL, x - r, y - r, x + r, y + r, 'c', c);
+      return c;
+    }
+    addRuntimeLow(p) {
+      this.addLow(p);
+      p.q = 0;
+      this._putGrid(this.dgrid, DCELL, p.x - p.r, p.y - p.r, p.x + p.r, p.y + p.r, 'l', p);
+      return p;
+    }
+
+    // Açık şehir yerleri (DS.Nav.places): garaj binası, kapılar, tabelalar, ankesörlü telefonlar.
+    // RNG'ye dokunmaz; bir kez uygulanır (tekrar çağrı etkisiz).
+    applyWorldEdits(places) {
+      if (this._worldEdits || !places) return false;
+      this._worldEdits = true;
+      const sh = places.safehouse;
+      if (sh) {
+        // güvenli ev: garajın altında ve batı şeridindeki park araçları kalıcı kalkar
+        const cl = sh.clear;
+        if (cl) {
+          for (let i = 0; i < this.parked.length; i++) {
+            const p = this.parked[i];
+            if (p.x >= cl.x0 && p.x < cl.x1 && p.y >= cl.y0 && p.y <= cl.y1) { this.takeParked(p); p.perm = true; }
+          }
+        }
+        if (sh.garage) {
+          const g = this.addSolid(sh.garage);
+          g.box = this.addRuntimeBox(g.x0, g.y0, g.x1, g.y1, g.kind);
+        }
+        if (sh.door) this.addRuntimeLow(sh.door);
+      }
+      if (places.spray && places.spray.door) this.addRuntimeLow(places.spray.door);
+      if (places.hospital && places.hospital.sign) this.addRuntimeLow(places.hospital.sign);
+      if (places.police && places.police.sign) this.addRuntimeLow(places.police.sign);
+      if (places.crane && places.crane.sign) this.addRuntimeLow(places.crane.sign);
+      const ph = places.phones || [];
+      for (let i = 0; i < ph.length; i++) {
+        const p = ph[i];
+        p.col = this.addRuntimeCirc(p.x, p.y, 0.3, 'phone'); // kırılmaz (brk 0)
+        if (p.prop) this.addRuntimeLow(p.prop);
+      }
+      return true;
     }
 
     // ================= ÇİZİM =================
@@ -1082,6 +1173,19 @@
 
     drawLowProps(ctx, v, t, M) {
       const list = this.visible(v, 'l', this._vl || (this._vl = []));
+      // alınmış (gone) proplar çizilmez; açık şehir propları (telefon, kapı, tabela) sayılır.
+      // Hiç dünya düzenlemesi/alınmış araç yoksa (serbest sürüş) bu geçiş tamamen atlanır.
+      let nw = 0;
+      if (this._worldEdits || this._nGone) {
+        let n = 0;
+        for (let i = 0; i < list.length; i++) {
+          const p = list[i];
+          if (p.gone) continue;
+          if (p.kind === 'phone' || p.kind === 'sign' || p.kind === 'door') nw++;
+          list[n++] = p;
+        }
+        list.length = n;
+      }
       // yangın muslukları, çöp kutuları, banklar, çalılar: türe göre toplu
       ctx.beginPath();
       for (const p of list) if (p.kind === 'hydrant' && !p.broken) { ctx.moveTo(p.x + 0.24, p.y); ctx.arc(p.x, p.y, 0.24, 0, U.TAU); }
@@ -1125,9 +1229,19 @@
           const R = c.r + 0.3;
           ctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
           ctx.drawImage(spr, c.x - R, c.y - R, R * 2, R * 2);
+        } else if (p.kind === 'door') {
+          // kepenk: w × 0.3 m, açıya göre döndürülmüş; açık gri çıtalar + dış kenarda renk şeridi
+          if (p.co === undefined) { p.co = Math.cos(p.ang); p.si = Math.sin(p.ang); }
+          const a = M[0], b = M[1], c = M[2], d = M[3], hw = p.w / 2;
+          ctx.setTransform(a * p.co + c * p.si, b * p.co + d * p.si, c * p.co - a * p.si, d * p.co - b * p.si, a * p.x + c * p.y + M[4], b * p.x + d * p.y + M[5]);
+          ctx.fillStyle = '#8a8f98'; ctx.fillRect(-hw, -0.15, p.w, 0.3);
+          ctx.fillStyle = '#c9ccd1';
+          for (let s = -hw + 0.15; s < hw - 0.2; s += 0.6) ctx.fillRect(s, -0.15, 0.3, 0.3);
+          ctx.fillStyle = p.col || '#c9ccd1'; ctx.fillRect(-hw, -0.15, p.w, 0.08);
         }
       }
       ctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
+      if (nw) this._drawWorldProps(ctx, list);
       // lastik adaları
       for (const ti of this.tireIsl) {
         if (ti.x + 6 < v.x0 || ti.x - 6 > v.x1 || ti.y + 6 < v.y0 || ti.y - 6 > v.y1) continue;
@@ -1158,6 +1272,49 @@
           ctx.fillStyle = '#1b1b1b'; ctx.fillRect(cn.x - 0.26, cn.y - 0.26, 0.52, 0.52);
           ctx.beginPath(); ctx.arc(cn.x, cn.y, 0.2, 0, U.TAU); ctx.fillStyle = '#ff6a13'; ctx.fill();
           ctx.beginPath(); ctx.arc(cn.x, cn.y, 0.12, 0, U.TAU); ctx.fillStyle = '#f2f2f2'; ctx.fill();
+        }
+      }
+    }
+
+    // Açık şehir alçak propları: ankesörlü telefon ve yer tabelaları (eksen hizalı, dünya dönüşümünde)
+    _drawWorldProps(ctx, list) {
+      ctx.beginPath();
+      for (let i = 0; i < list.length; i++) { const p = list[i]; if (p.kind === 'phone') ctx.rect(p.x - 0.35, p.y - 0.25, 0.7, 0.5); }
+      ctx.fillStyle = '#1f5fbf'; ctx.fill();
+      ctx.beginPath();
+      for (let i = 0; i < list.length; i++) { const p = list[i]; if (p.kind === 'phone') ctx.rect(p.x - 0.35, p.y - 0.25, 0.7, 0.12); }
+      ctx.fillStyle = '#f2f4f7'; ctx.fill();
+      ctx.beginPath();
+      for (let i = 0; i < list.length; i++) { const p = list[i]; if (p.kind === 'phone') ctx.rect(p.x - 0.08, p.y - 0.36, 0.16, 0.1); }
+      ctx.fillStyle = '#1b1d22'; ctx.fill();
+      for (let i = 0; i < list.length; i++) {
+        const p = list[i];
+        if (p.kind !== 'sign') continue;
+        const x = p.x, y = p.y;
+        if (p.sym === 'cross') {
+          ctx.fillStyle = '#f4f6f8'; ctx.fillRect(x - 0.6, y - 0.6, 1.2, 1.2);
+          ctx.fillStyle = '#d42a2a'; ctx.fillRect(x - 0.42, y - 0.13, 0.84, 0.26); ctx.fillRect(x - 0.13, y - 0.42, 0.26, 0.84);
+        } else if (p.sym === 'police') {
+          ctx.fillStyle = '#1f4fa8'; ctx.fillRect(x - 0.6, y - 0.6, 1.2, 1.2);
+          ctx.beginPath();
+          for (let k = 0; k < 10; k++) {
+            const a = -Math.PI / 2 + (k * Math.PI) / 5, r = k & 1 ? 0.17 : 0.43;
+            if (k) ctx.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r); else ctx.moveTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
+          }
+          ctx.closePath(); ctx.fillStyle = '#ffffff'; ctx.fill();
+        } else {
+          // vinç: sarı/siyah tehlike karesi
+          ctx.fillStyle = '#ffc400'; ctx.fillRect(x - 0.6, y - 0.6, 1.2, 1.2);
+          ctx.save();
+          ctx.beginPath(); ctx.rect(x - 0.6, y - 0.6, 1.2, 1.2); ctx.clip();
+          ctx.beginPath();
+          for (let k = -2; k <= 2; k++) {
+            const o = k * 0.5;
+            ctx.moveTo(x - 0.7 + o, y + 0.7); ctx.lineTo(x - 0.45 + o, y + 0.7); ctx.lineTo(x + 0.95 + o, y - 0.7); ctx.lineTo(x + 0.7 + o, y - 0.7); ctx.closePath();
+          }
+          ctx.fillStyle = '#1b1d22'; ctx.fill();
+          ctx.restore();
+          ctx.lineWidth = 0.1; ctx.strokeStyle = '#1b1d22'; ctx.strokeRect(x - 0.55, y - 0.55, 1.1, 1.1);
         }
       }
     }

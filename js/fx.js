@@ -234,6 +234,8 @@
   // ---------------- PARÇACIKLAR ----------------
   const SPARK_COLS = ['#fff7d6', '#ffc34d', '#ff6a1f'];
   const SPLASH_COLS = ['rgba(200,230,255,0.5)', 'rgba(200,230,255,0.36)', 'rgba(200,230,255,0.22)', 'rgba(200,230,255,0.1)'];
+  // açık dünya efektlerinin (patlama, yanma) alev/parlama üst sınırları
+  const FLAME_CAP = 48, FLASH_CAP = 40;
 
   class FX {
     constructor() {
@@ -310,6 +312,42 @@
       if (this.debris.length > this.maxDebris) this.debris.splice(0, this.debris.length - this.maxDebris);
     }
     jet(x, y, dur) { this.jets.push({ x, y, t: 0, dur }); }
+
+    // ---- açık dünya efektleri (karikatür; kan yok) ----
+    // Alev dizileri sınırsız büyümesin: yeni efektler yalnızca sınırın altındayken alev ekler
+    _fireCapped(x, y, ang, scale, vx, vy) {
+      if (this.flame.length >= FLAME_CAP || this.flash.length >= FLASH_CAP) return false;
+      this.fire(x, y, ang, scale, vx, vy);
+      return true;
+    }
+    // Patlama: parlama, halka hâlinde alevler, siyah duman, gövde renginde parçalar ve cam kırıkları
+    explode(x, y, col) {
+      if (this.flash.length < FLASH_CAP) this.flash.push({ x, y, r: 18, life: 0.35, t: 0, col: '#ff9a3a' });
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * U.TAU + Math.random() * 0.4;
+        this._fireCapped(x + Math.cos(a) * 0.9, y + Math.sin(a) * 0.9, a, 1.4, Math.cos(a) * 2, Math.sin(a) * 2);
+      }
+      for (let i = 0; i < 12; i++) {
+        const a = Math.random() * U.TAU, s = 0.6 + Math.random() * 2.4;
+        this.puff(x + Math.cos(a) * 0.8, y + Math.sin(a) * 0.8, Math.cos(a) * s, Math.sin(a) * s, 1.2, 2.5, 0.55, 2.5, '#3a3a3a');
+      }
+      this.bits(x, y, 0, 0, col || '#8a8f98', 14, 0.22);
+      this.bits(x, y, 0, 0, '#cfe3ef', 8, 0.1);
+      this.sparks(x, y, 0, 0, 30, 14);
+    }
+    // Yaya devrilmesi: toz bulutu + kıyafet (pantolon) renginde birkaç parça; kırmızı yok
+    knock(x, y, col) {
+      this.puff(x, y, 0, 0, 0.4, 1.2, 0.45, 0.8, '#a39373');
+      this.bits(x, y, 0, 0, col || '#4a3b2a', 4, 0.08);
+    }
+    // Hasarlı araç dumanı: beyaz (< %65) ya da siyah (< %35), çağıran hızı sınırlar
+    dmgSmoke(x, y, vx, vy, black) {
+      this.puff(x, y, vx, vy, 0.5, 1.8, 0.35, 1.6, black ? '#3a3a3a' : '#d6dde6');
+    }
+    // Yanan araç: tek küçük alev (rastgele yön), çağıran hızı sınırlar
+    burn(x, y, vx, vy) {
+      this._fireCapped(x, y, Math.random() * U.TAU, 0.6, vx, vy);
+    }
 
     update(dt) {
       const pool = this.pool, rMax = this.S.rMax;

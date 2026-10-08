@@ -41,6 +41,27 @@
     <canvas id="minimap" width="120" height="120" aria-label="Mini harita"></canvas>
   </div>
 
+  <!-- açık şehir göstergeleri -->
+  <div id="w-right" class="world-only">
+    <div id="w-stars" aria-label="Aranma seviyesi"><i></i><i></i><i></i><i></i><i></i></div>
+    <div id="w-money">₺0</div>
+    <div class="w-bars">
+      <div id="w-hp" class="w-bar" aria-label="Sağlık"><i></i></div>
+      <div id="w-carhp" class="w-bar car" aria-label="Araç hasarı" hidden><i></i></div>
+    </div>
+    <div id="w-bust" class="w-bar" aria-label="Kelepçe" hidden><i></i></div>
+    <div class="w-row"><span id="w-bounty" hidden></span><span id="w-clock">21:00</span></div>
+  </div>
+  <div id="w-left" class="world-only">
+    <div id="w-obj" class="world-only" hidden>
+      <div class="w-obj-txt"><b id="w-obj-t"></b><span id="w-obj-s"></span></div>
+      <span id="w-timer" hidden></span>
+    </div>
+    <div id="w-zone" class="world-only"></div>
+  </div>
+  <div id="w-big" class="world-only" aria-live="assertive"><b></b><span></span></div>
+  <div id="w-prompt" class="world-only" hidden></div>
+
   <div id="tandem-hud" hidden>
     <div class="t-prog"><i id="t-prog"></i></div>
     <div class="t-row">
@@ -72,6 +93,19 @@
       <button class="ctl gear" data-ctl="gup" aria-label="Vites yükselt">+</button>
       <button class="ctl gear" data-ctl="gdn" aria-label="Vites düşür">−</button>
     </div>
+    <div id="foot-pad">
+      <div class="stick-zone" data-ctl="stick" aria-label="Yürüme çubuğu">
+        <div id="stick-base"><i id="stick-knob"></i></div>
+      </div>
+      <button class="ctl round" data-ctl="attack" aria-label="İt"><span>İT</span></button>
+    </div>
+    <button id="ctl-enter" class="ctl round" data-ctl="enter" aria-label="Bin / in"><span>BİN</span></button>
+    <button id="ctl-act" class="ctl round" data-ctl="act" aria-label="Etkileş"><span>ETKİLEŞ</span></button>
+    <button id="ctl-horn" class="ctl round" data-ctl="horn" aria-label="Korna"><span>KORNA</span></button>
+    <button id="ctl-map" class="ctl" data-ctl="map" aria-label="Harita">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6 L9 3.5 L15 6 L21 3.5 V18 L15 20.5 L9 18 L3 20.5 Z M9 3.5 V18 M15 6 V20.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+      <span>HARİTA</span>
+    </button>
   </div>
   <div id="toast" role="status"></div>
 </div>
@@ -84,7 +118,8 @@
       <p class="tag">Gece yarısı. Boş sokaklar. Yan yan.</p>
     </div>
     <nav class="menu-nav">
-      <button class="mbtn primary" data-act="free"><b>Serbest sürüş</b><small>Şehirde dolaş, kombo kur</small></button>
+      <button class="mbtn primary" data-act="world"><b>Açık Şehir</b><small>Yürü, araç çal, polisten kaç, görev al</small></button>
+      <button class="mbtn" data-act="free"><b>Serbest sürüş</b><small>Şehirde dolaş, kombo kur</small></button>
       <button class="mbtn" data-act="tandem"><b>Tandem</b><small>Lideri yakından takip et</small></button>
       <button class="mbtn" data-act="garage"><b>Garaj</b><small>Araç, boya, parça</small></button>
       <button class="mbtn" data-act="settings"><b>Ayarlar</b><small>Kontrol, kamera, grafik</small></button>
@@ -94,7 +129,8 @@
       <div class="chip"><span>En iyi kombo</span><b id="m-best">0</b></div>
       <div class="chip"><span>Araç</span><b id="m-car">HACHI</b></div>
     </div>
-    <p class="keys-hint" id="keys-hint">Klavye: ← → direksiyon · ↑ gaz · ↓ fren/geri · Boşluk el freni · Shift debriyaj atma · Q/E vites · C kamera · R kurtar · P duraklat</p>
+    <p class="keys-hint" id="keys-hint">Klavye: ← → direksiyon · ↑ gaz · ↓ fren/geri · Boşluk el freni · Shift debriyaj atma · Q/E vites · C kamera · R kurtar · P duraklat · N ses<br>
+      Açık şehir: WASD/oklar yürü · Shift koş · F bin/in · Boşluk it · E etkileş · H korna · M/Tab harita · X vites</p>
   </div>
 </section>
 
@@ -153,6 +189,10 @@
       <label class="row"><span>Yakınlık</span><input id="s-zoom" type="range" min="0.7" max="1.4" step="0.05"></label>
       <label class="row"><span>Saat</span>
         <select id="s-time"><option value="day">Gündüz</option><option value="sunset">Gün batımı</option><option value="night">Gece</option></select></label>
+      <label class="row"><span>Açık şehir kamerası</span>
+        <select id="s-wcam"><option value="north">Sabit (kuzey yukarı)</option><option value="chase">Takip</option></select></label>
+      <label class="row"><span>Açık şehir saati</span>
+        <select id="s-wtime"><option value="cycle">Gün döngüsü</option><option value="day">Gündüz</option><option value="sunset">Gün batımı</option><option value="night">Gece</option></select></label>
       <label class="row"><span>Hava</span>
         <select id="s-weather"><option value="clear">Açık</option><option value="rain">Yağmurlu (ıslak zemin)</option></select></label>
     </div>
@@ -176,9 +216,11 @@
     <h2>Duraklatıldı</h2>
     <div class="col">
       <button class="mbtn primary" data-act="resume"><b>Devam et</b></button>
+      <button class="mbtn world-only" data-act="map"><b>Harita</b><small>Yol noktası koy, yerleri gör</small></button>
       <button class="mbtn" data-act="respawn"><b>Yola dön</b><small>Aracı en yakın yola koy</small></button>
       <button class="mbtn" data-act="garage"><b>Garaj</b></button>
       <button class="mbtn" data-act="settings"><b>Ayarlar</b></button>
+      <button class="mbtn mission-only" data-act="abort"><b>Görevi bırak</b><small>Görev başarısız sayılır</small></button>
       <button class="mbtn" data-act="menu"><b>Ana menü</b></button>
     </div>
   </div>
@@ -204,19 +246,75 @@
   </div>
 </section>
 
+<!-- ============ AÇIK ŞEHİR: TAM EKRAN HARİTA ============ -->
+<section id="map" class="screen" hidden>
+  <canvas id="map-canvas" aria-label="Şehir haritası"></canvas>
+  <header class="map-head">
+    <h2>HARİTA</h2>
+    <button class="back" data-act="map-close" aria-label="Haritayı kapat">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M6 6 L18 18 M18 6 L6 18" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>
+    </button>
+  </header>
+  <div id="map-legend" role="group" aria-label="Harita katmanları">
+    <button class="lg on" data-f="missions"><i class="lg-mis"></i>Görevler</button>
+    <button class="lg on" data-f="phones"><i class="lg-ph"></i>Telefon</button>
+    <button class="lg on" data-f="places"><i class="lg-pl"></i>Boyahane-Ev</button>
+    <button class="lg on" data-f="side"><i class="lg-sd"></i>Etkinlik</button>
+  </div>
+  <p class="map-hint">Dokun: yol noktası · Çift dokun: yakınlaş · Kaydır: gez</p>
+</section>
+
+<!-- ============ AÇIK ŞEHİR: ANKESÖRLÜ TELEFON ============ -->
+<section id="phone" class="screen overlay" hidden>
+  <div class="card phone-card">
+    <p class="eyebrow">ANKESÖRLÜ TELEFON</p>
+    <h2 id="ph-crew">Ekip</h2>
+    <div class="ph-resp"><span>Saygınlık</span><div id="ph-resp"><i></i></div><em id="ph-resp-n">0</em></div>
+    <div id="ph-list"></div>
+    <div class="row-btns">
+      <button class="mbtn" data-act="phone-close"><b>Kapat</b></button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ AÇIK ŞEHİR: GÖREV SONUCU ============ -->
+<section id="mresult" class="screen overlay" hidden>
+  <div class="card">
+    <p class="eyebrow" id="mr-name">Görev</p>
+    <h2 id="mr-title">GÖREV TAMAM!</h2>
+    <div class="mr-row"><b id="mr-reward"></b><span id="mr-medal" hidden></span></div>
+    <p class="r-note" id="mr-note"></p>
+    <div class="row-btns">
+      <button class="mbtn primary" data-act="mres-retry"><b>TEKRAR DENE</b></button>
+      <button class="mbtn" data-act="mres-close"><b>Devam</b></button>
+    </div>
+  </div>
+</section>
+
+<div id="w-loading" hidden role="status"><div class="spin" aria-hidden="true"></div><b>Şehir hazırlanıyor…</b></div>
+
 <div id="fps" hidden></div>
 
 <script src="js/util.js"></script>
 <script src="js/data.js"></script>
+<script src="js/vehicles.js"></script>
 <script src="js/quality.js"></script>
 <script src="js/collide.js"></script>
 <script src="js/city.js"></script>
+<script src="js/nav.js"></script>
 <script src="js/car.js"></script>
 <script src="js/fx.js"></script>
+<script src="js/actors.js"></script>
 <script src="js/audio.js"></script>
 <script src="js/input.js"></script>
 <script src="js/score.js"></script>
 <script src="js/tandem.js"></script>
+<script src="js/traffic.js"></script>
+<script src="js/peds.js"></script>
+<script src="js/police.js"></script>
+<script src="js/missions.js"></script>
+<script src="js/world.js"></script>
+<script src="js/hud.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/main.js"></script>
 </body>

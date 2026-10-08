@@ -1,5 +1,5 @@
 'use strict';
-// Oyun döngüsü, kamera, katmanlı çizim, modlar (menü vitrini, serbest sürüş, tandem)
+// Oyun döngüsü, kamera, katmanlı çizim, modlar (menü vitrini, serbest sürüş, tandem, açık şehir)
 (function () {
   const DS = window.DS, U = DS.U, C = DS.Collide;
   const SAVE_KEY = 'driftSehri.v1';
@@ -10,6 +10,21 @@
     sunset: { sun: { x: 1.25, y: 0.62 }, shadowA: 0.3, light: true, ambient: 'rgb(255,176,136)', bldAmb: 'rgb(232,156,120)', lamps: true, lampA: 0.5, headA: 0.45, windows: true, bloom: 0.05 },
     night: { sun: null, shadowA: 0, light: true, ambient: 'rgb(60,68,110)', bldAmb: 'rgb(72,80,122)', lamps: true, lampA: 1, headA: 1, windows: true, bloom: 0.17 },
   };
+  DS.ENV = ENV; // açık şehir gün/gece aradeğerlemesi kullanır
+
+  // save.ow birleştirme (§5.8): eksik/bozuk alanlar varsayılana döner, iç içe nesneler ayrı birleşir
+  const isObj = (o) => !!o && typeof o === 'object' && !Array.isArray(o);
+  function mergeOw(base, raw) {
+    base = isObj(base) ? base : {};
+    const o = isObj(raw) ? raw : {};
+    const r = Object.assign({}, base, o);
+    for (const k of ['respect', 'side', 'stats', 'tut']) r[k] = Object.assign({}, base[k] || {}, isObj(o[k]) ? o[k] : {});
+    r.missions = isObj(o.missions) ? o.missions : {};
+    r.clock = typeof o.clock === 'number' && o.clock >= 0 && o.clock < 24 ? o.clock : base.clock;
+    r.hp = typeof o.hp === 'number' && o.hp >= 1 && o.hp <= 100 ? o.hp : base.hp;
+    r.v = 1;
+    return r;
+  }
 
   const Game = (DS.Game = {
     init() {
@@ -24,7 +39,7 @@
       this.cars = [];
       this.renderScale = 1; this.dpr = 1;
       DS.Sprites.init();
-      DS.Sprites.prewarm(['#f4f4f4', '#7a6a45', '#a39373', '#d6dde6', '#cfd8e2', '#8f96ad']);
+      DS.Sprites.prewarm(['#f4f4f4', '#7a6a45', '#a39373', '#d6dde6', '#cfd8e2', '#8f96ad', '#3a3a3a']);
       this.city = new DS.City(20251005);
       this.city.makeTextures();
       this.city.buildMinimap();
@@ -34,6 +49,15 @@
       this.input.attach(document.getElementById('controls'));
       this.score = new DS.DriftScore();
       this.score.onBank = (pts) => {
+        if (this.mode === 'world' && this.world) {
+          // açık şehirde parayı dünya öder (Kulüp çarpanı, görev olayı); burada tekrar ödenmez
+          this.world.onDriftBank(pts, this.score.mult);
+          this.save.best = Math.max(this.save.best, pts);
+          this.save.total += pts;
+          this.dirty = true;
+          this.audio.chime();
+          return;
+        }
         this.save.money += Math.round(pts / 10);
         this.save.best = Math.max(this.save.best, pts);
         this.save.total += pts;
@@ -64,12 +88,20 @@
         brk: (col) => this.onBreak(col),
         cone: () => this.audio.impact(1.2),
       };
+      // açık şehir orkestratörü: ucuz kurucu (nav ve alt sistemler ilk dünya başlangıcında kurulur)
+      this.world = DS.World ? new DS.World(this) : null;
       DS.UI.init(this);
       this.applySettings();
       this.setupQuality(true);
       window.addEventListener('resize', () => this.resize());
       window.addEventListener('orientationchange', () => setTimeout(() => this.resize(), 200));
-      document.addEventListener('visibilitychange', () => { if (document.hidden && this.state === 'play') this.pause(); });
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) return;
+        if (this.state === 'play') this.pause();
+        this.persist();
+      });
+      // GPU bağlamı geri gelince aktör sprite önbellekleri yeniden kurulur
+      this.canvas.addEventListener('contextrestored', () => { if (DS.ActorSprites && DS.ActorSprites.clear) DS.ActorSprites.clear(); });
       DS.UI.show('menu');
       requestAnimationFrame((t) => this.loop(t));
     },
@@ -78,7 +110,8 @@
     load() {
       const base = {
         v: 1, money: 5000, best: 0, total: 0, owned: ['hachi'], car: 'hachi', cars: {}, hint: false,
-        settings: { steer: 'buttons', sens: 0.6, assist: 0.7, trans: 'auto', cam: 'chase', zoom: 1, time: 'night', weather: 'clear', quality: 'auto', qv: 2, dynres: true, fpsCap: 0, sound: true, vol: 0.8, fps: false },
+        settings: { steer: 'buttons', sens: 0.6, assist: 0.7, trans: 'auto', cam: 'chase', zoom: 1, time: 'night', weather: 'clear', quality: 'auto', qv: 2, dynres: true, fpsCap: 0, sound: true, vol: 0.8, fps: false, wcam: 'north', wtime: 'cycle' },
+        ow: DS.World ? DS.World.defaultSave() : {},
       };
       const d = U.store.get(SAVE_KEY, null);
       if (!d || d.v !== 1) return base;
@@ -91,9 +124,16 @@
       d.owned = Array.isArray(d.owned) && d.owned.length ? d.owned : ['hachi'];
       d.cars = d.cars || {};
       if (!DS.CARS.some((c) => c.id === d.car)) d.car = 'hachi';
+      // eski kayıtlarda açık şehir verisi yok: varsayılanlarla birleştir (d.ow okumak Game.init'te patlamasın)
+      d.ow = mergeOw(base.ow, d.ow);
       return Object.assign(base, d);
     },
-    persist() { clearTimeout(this._pt); U.store.set(SAVE_KEY, this.save); this.dirty = false; },
+    persist() {
+      clearTimeout(this._pt);
+      if (this.mode === 'world' && this.world) this.world.saveOw();
+      U.store.set(SAVE_KEY, this.save);
+      this.dirty = false;
+    },
     persistSoon() { clearTimeout(this._pt); this._pt = setTimeout(() => this.persist(), 400); },
     carSetup(id) {
       if (!this.save.cars[id]) this.save.cars[id] = DS.defaultCarSetup(DS.carById(id));
@@ -103,6 +143,13 @@
     },
     selectCar(id) {
       this.save.car = id;
+      if (this.inWorld()) {
+        // açık şehir: sürülen (çalıntı olabilir) araç değişmez; kendi aracı dünya yeniden giydirir
+        this.carSetup(id);
+        this.persist();
+        this.world.onGarageChange();
+        return;
+      }
       const def = DS.carById(id);
       this.car.setDef(def, this.carSetup(id));
       this.car.gear = Math.min(this.car.gear, def.gears.length);
@@ -111,6 +158,7 @@
       this.persist();
     },
     applyCarSetup() {
+      if (this.inWorld()) { this.carSetup(this.save.car); this.persist(); this.world.onGarageChange(); return; }
       this.car.setDef(this.car.def, this.carSetup(this.car.def.id));
       this.applySettings();
       this.persist();
@@ -126,14 +174,17 @@
       b.toggle('steer-slider', s.steer === 'slider');
       b.toggle('steer-tilt', s.steer === 'tilt');
       this.audio.setOn(s.sound); this.audio.setVol(s.vol);
-      const e = Object.assign({}, ENV[s.time] || ENV.night);
-      e.rain = s.weather === 'rain';
-      if (e.rain) {
-        e.sun = null;
-        if (s.time === 'day') Object.assign(e, { light: true, ambient: 'rgb(152,162,184)', bldAmb: 'rgb(122,130,150)', lamps: true, lampA: 0.4, headA: 0.5, windows: true, bloom: 0.04 });
+      if (this.inWorld()) this.world.applyEnv(true);
+      else {
+        const e = Object.assign({}, ENV[s.time] || ENV.night);
+        e.rain = s.weather === 'rain';
+        if (e.rain) {
+          e.sun = null;
+          if (s.time === 'day') Object.assign(e, { light: true, ambient: 'rgb(152,162,184)', bldAmb: 'rgb(122,130,150)', lamps: true, lampA: 0.4, headA: 0.5, windows: true, bloom: 0.04 });
+        }
+        this.env = e;
+        this.tuneEnv();
       }
-      this.env = e;
-      this.tuneEnv();
       // kalite modu değiştiyse kademeyi yeniden kur
       const qkey = s.quality + '|' + s.dynres + '|' + s.fpsCap;
       if (this._qReady && this._qkey !== qkey) this.setupQuality(false);
@@ -206,6 +257,7 @@
       this.fx.setQuality(this.Q);
       if (DS.UI.setQuality) DS.UI.setQuality(this.Q);
       if (this.audio.setQuality) this.audio.setQuality(this.Q);
+      if (this.world) this.world.setQuality(this.Q);
       this.tuneEnv();
       this.resize();
     },
@@ -239,7 +291,12 @@
       this.audio.init();
       this.audio.setVoice(this.car.def.voice);
       this.state = 'play';
-      document.body.classList.toggle('tandem', this.mode === 'tandem');
+      const b = document.body.classList, world = this.inWorld();
+      b.toggle('tandem', this.mode === 'tandem');
+      b.toggle('world', world);
+      b.toggle('onfoot', world && this.world.onFoot);
+      this.input.world = world;
+      if (this.input.setContext) this.input.setContext(world && this.world.onFoot ? 'foot' : 'drive');
       DS.UI.hideAll();
       DS.UI.el.hud.hidden = false;
       DS.UI.sizeCanvases();
@@ -249,14 +306,39 @@
       this.last = performance.now() / 1000;
       this.carFX = this.fxState(); this.leadFX = this.fxState();
       try { if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(() => {}); } catch (e) { /* desteklenmiyor */ }
-      if (!this.save.hint) {
+      if (world) {
+        // açık şehir ipuçları dünyanın mesajlarındadır
+      } else if (!this.save.hint) {
         this.save.hint = true;
         DS.UI.toast(document.body.classList.contains('touch') ? 'İpucu: gaza hızlı iki kez dokun = debriyaj atma' : 'İpucu: Shift = debriyaj atma, Boşluk = el freni', 4200);
       } else if (this.cssH > this.cssW && document.body.classList.contains('touch')) {
         DS.UI.toast('En iyi deneyim için telefonu yan çevir', 2600);
       }
     },
+    // açık şehir: nav ilk seferde (yükleme perdesiyle) kurulur, sonra güvenli evde yaya olarak başlanır
+    startWorld() {
+      const W = this.world;
+      if (!W) { DS.UI.toast('Açık şehir yüklenemedi', 2000); return; }
+      if (W.loading || this.state !== 'menu') return;
+      this.mode = 'world'; this.judge = null;
+      this.audio.init(); this.audio.setLeaderVoice(null);
+      W.ensureNav(() => {
+        // yükleme sırasında başka bir moda geçildiyse başlama
+        if (this.mode !== 'world' || this.state !== 'menu') return;
+        this.city.resetCones();
+        this.fx.clear();
+        W.begin();
+        this.beginPlay();
+      }, () => {
+        if (this.mode === 'world' && this.state === 'menu') this.mode = 'free';
+        DS.UI.toast('Açık şehir yüklenemedi', 2200);
+      });
+    },
+    inWorld() { return this.mode === 'world' && !!this.world && this.world.state !== 'off'; },
+    // kameranın ve mini haritanın odağı: açık şehirde yaya ya da oyuncu aracı
+    focus() { return this.inWorld() ? this.world.focus() : this.car; },
     startFree() {
+      if (this.world && this.world.state !== 'off') this.world.end();
       this.mode = 'free'; this.judge = null;
       this.audio.init(); this.audio.setLeaderVoice(null);
       this.car.reset(this.spawn.x, this.spawn.y, this.spawn.ang);
@@ -264,6 +346,7 @@
       this.beginPlay();
     },
     startTandem() {
+      if (this.world && this.world.state !== 'off') this.world.end();
       this.mode = 'tandem';
       this.audio.init();
       const L = this.leader;
@@ -292,8 +375,11 @@
       this.last = performance.now() / 1000;
     },
     toMenu() {
+      const wasWorld = this.mode === 'world';
+      // önce mode = 'free': world.end() içindeki applySettings dünya saatini yeniden uygulamasın
       this.state = 'menu'; this.mode = 'free'; this.judge = null;
       DS.UI.el.hud.hidden = true;
+      if (wasWorld && this.world) this.world.end();
       this.audio.silence();
       this.audio.setLeaderVoice(null);
       this.leader.reset(0); this.leader.go = true;
@@ -302,6 +388,7 @@
       DS.UI.show('menu');
     },
     respawn() {
+      if (this.inWorld()) { this.world.unstuck(); return; }
       const p = this.city.respawnPoint(this.car.x, this.car.y, this.car.h);
       this.car.reset(p.x, p.y, p.h);
       this.score.reset();
@@ -339,7 +426,9 @@
       dt = Math.min(dt, this.Q ? this.Q.dtMax : 0.05);
       this.fpsAvg = U.lerp(this.fpsAvg, 1000 / Math.max(delta, 1), 0.05);
       this.time += dt;
-      const frozen = this.state === 'pause' || this.state === 'result' || DS.UI.current === 'garage' || DS.UI.current === 'settings';
+      const cur = DS.UI.current;
+      const frozen = this.state === 'pause' || this.state === 'result' || cur === 'garage' || cur === 'settings' ||
+        cur === 'map' || cur === 'phone' || cur === 'mresult';
       try {
         if (!frozen) {
           if (this.state === 'play') this.updatePlay(dt);
@@ -368,7 +457,9 @@
     // Fizik adımları arasında ara değer: araçlar bir sonraki adıma doğru yumuşakça çizilir
     drawFrame(dt) {
       const a = U.sat(this.acc / STEP);
-      const objs = this.state === 'menu' ? [this.leader] : this.mode === 'tandem' ? [this.leader, this.car] : [this.car];
+      const wd = this.state !== 'menu' && this.inWorld() ? this.world : null;
+      const objs = this.state === 'menu' ? [this.leader] : this.mode === 'tandem' ? [this.leader, this.car] : wd ? (wd.inCar ? [this.car] : []) : [this.car];
+      if (wd) wd.lerpPoses(a);
       for (const o of objs) {
         if (o.px === undefined) continue;
         o._x = o.x; o._y = o.y; o._h = o.h;
@@ -383,6 +474,7 @@
           if (o._x === undefined) continue;
           o.x = o._x; o.y = o._y; o.h = o._h; o._x = undefined;
         }
+        if (wd) wd.restorePoses();
       }
     },
 
@@ -401,11 +493,17 @@
       const I = this.input, s = this.save.settings, car = this.car;
       const inp = I.poll(dt, this.time);
       if (I.edge('pause')) { this.pause(); return; }
+      const world = this.inWorld();
       if (I.edge('reset')) this.respawn();
-      if (I.edge('cam')) { s.cam = s.cam === 'chase' ? 'north' : 'chase'; DS.UI.toast(s.cam === 'chase' ? 'Kamera: takip' : 'Kamera: sabit', 1200); this.persist(); }
+      if (I.edge('cam')) {
+        if (world) { s.wcam = s.wcam === 'chase' ? 'north' : 'chase'; DS.UI.toast(s.wcam === 'chase' ? 'Kamera: takip' : 'Kamera: sabit', 1200); }
+        else { s.cam = s.cam === 'chase' ? 'north' : 'chase'; DS.UI.toast(s.cam === 'chase' ? 'Kamera: takip' : 'Kamera: sabit', 1200); }
+        this.persist();
+      }
       if (I.edge('mute')) { s.sound = !s.sound; this.audio.setOn(s.sound); DS.UI.toast(s.sound ? 'Ses açık' : 'Ses kapalı', 1200); this.persist(); }
       const gu = I.edge('gup'), gd = I.edge('gdn');
-      if (!car.auto) { if (gu) car.shiftUp(); if (gd) car.shiftDown(); }
+      if (!car.auto && (!world || this.world.inCar)) { if (gu) car.shiftUp(); if (gd) car.shiftDown(); }
+      if (world) { this.updateWorld(dt, inp); return; }
 
       const tandem = this.mode === 'tandem' && this.judge;
       const counting = tandem && this.judge.state === 'count';
@@ -457,6 +555,42 @@
       this.audio.update(A, dt);
     },
 
+    // Açık şehir karesi (§2.7): giriş/durum makinesi, 120 Hz fizik (oyuncu + NPC), dünya güncellemesi, ses
+    updateWorld(dt, inp) {
+      const Wd = this.world, car = this.car, city = this.city;
+      Wd.preUpdate(dt, inp);
+      let kick = inp.kick;
+      this.acc += dt;
+      let n = 0;
+      const cap = this.Q.physCap;
+      while (this.acc >= STEP && n < cap) {
+        if (Wd.inCar) {
+          inp.kick = kick; kick = false;
+          car.px = car.x; car.py = car.y; car.ph = car.h;
+          car.updateSteer(STEP, inp.steer, this.steerAssist);
+          car.step(STEP, inp, city, this.env);
+          city.collideCar(car, this.ev);
+        }
+        Wd.stepPhys(STEP);
+        city.updateCones(STEP);
+        this.acc -= STEP; n++;
+      }
+      if (n >= cap) this.acc = 0;
+      Wd.update(dt);
+      if (Wd.inCar && this.state === 'play') {
+        this.nearT -= dt;
+        if (this.nearT <= 0) { this.near = city.nearWall(car, 2); this.nearT = 0.06; }
+        this.score.update(dt, car, this.near);
+        this.checkClips(dt);
+        this.emitFX(car, dt, this.carFX);
+        this.handleEvents(car);
+      } else car.events.length = 0;
+      this.scrape = Math.max(0, this.scrape - dt * 4);
+      const A = this.aud;
+      Wd.audioFrame(A, dt);
+      this.audio.update(A, dt);
+    },
+
     collideLeader() {
       const ct = C.obbObb(this.car.obb(), this.leader.obb());
       if (!ct) return;
@@ -496,6 +630,7 @@
         this.scrape = Math.min(1, Math.max(this.scrape, res.vt / 18));
         if (Math.random() < 0.6) this.fx.sparks(ct.px, ct.py, car.vx * 0.7, car.vy * 0.7, 2, 2.5);
       }
+      if (vn > 1.0 && this.inWorld()) this.world.onPlayerWall(vn, kind);
     },
     onBreak(col) {
       const car = this.car;
@@ -513,6 +648,7 @@
         this.audio.impact(3);
       }
       this.cam.shake = Math.min(1, this.cam.shake + 0.25);
+      if (this.inWorld()) this.world.onPropBreak(col);
     },
 
     handleEvents(car) {
@@ -587,6 +723,7 @@
 
     // ---------------- kamera ----------------
     updateCamera(dt) {
+      if (this.state !== 'menu' && this.inWorld()) { this.updateCameraWorld(dt); return; }
       const s = this.save.settings, cam = this.cam;
       const tgt = this.state === 'menu' ? this.leader : this.car;
       const sp = Math.hypot(tgt.vx, tgt.vy);
@@ -601,6 +738,30 @@
       // takip kamerasında araç ekranın alt yarısında; kısa yatay ekranda gösterge üstünde kalacak kadar yukarıda
       const lift = this.cssH < 500 && this.cssW > this.cssH ? 0.07 : 0.15;
       const look = Math.min(sp * 0.3, 12) + (chase ? viewH * lift : 0);
+      const tx = tgt.x + Math.cos(cam.vAng) * look, ty = tgt.y + Math.sin(cam.vAng) * look;
+      cam.x = U.damp(cam.x, tx, 6, dt); cam.y = U.damp(cam.y, ty, 6, dt);
+      const rt = chase ? -Math.PI / 2 - cam.vAng : 0;
+      cam.rot = U.alerp(cam.rot, rt, 1 - Math.exp(-(chase ? 2.6 : 4) * dt));
+      cam.shake *= Math.exp(-5 * dt);
+    },
+
+    // Açık şehir kamerası (§2.9): yayayken kuzey yukarı ×1.35; araçta hızla Q.zoomMin'e açılır, ≥3★ biraz daha
+    updateCameraWorld(dt) {
+      const s = this.save.settings, cam = this.cam, Wd = this.world, Q = this.Q;
+      const tgt = Wd.focus();
+      const sp = Math.hypot(tgt.vx, tgt.vy);
+      const vAng = sp > 2.5 ? Math.atan2(tgt.vy, tgt.vx) : tgt.h;
+      cam.vAng = U.alerp(cam.vAng, vAng, 1 - Math.exp(-4 * dt));
+      const zBase = U.clamp(Math.min(this.cssW, this.cssH) / 40, 9.5, 18) * s.zoom;
+      const foot = !Wd.inCar;
+      const stars = Wd.police ? Wd.police.stars : 0;
+      const zt = foot ? zBase * 1.35 : zBase * U.lerp(1, Q.zoomMin || 0.7, U.smooth(4, 45, sp)) * (stars >= 3 ? 0.92 : 1);
+      cam.zoomCss = cam.zoomCss ? U.damp(cam.zoomCss, zt, 2, dt) : zt;
+      cam.zoom = cam.zoomCss * this.dpr;
+      const chase = !foot && s.wcam === 'chase';
+      const viewH = this.cssH / cam.zoomCss;
+      const lift = this.cssH < 500 && this.cssW > this.cssH ? 0.07 : 0.15;
+      const look = foot ? Math.min(0.3 * sp, 3) : chase ? Math.min(0.5 * sp, 20) + viewH * lift : Math.min(0.9 * sp, 40);
       const tx = tgt.x + Math.cos(cam.vAng) * look, ty = tgt.y + Math.sin(cam.vAng) * look;
       cam.x = U.damp(cam.x, tx, 6, dt); cam.y = U.damp(cam.y, ty, 6, dt);
       const rt = chase ? -Math.PI / 2 - cam.vAng : 0;
@@ -624,7 +785,9 @@
       cp.x = cx; cp.y = cy;
       const cars = this.cars;
       cars.length = 0;
+      const wd = this.state !== 'menu' && this.inWorld() ? this.world : null;
       if (this.state === 'menu') cars.push(this.leader);
+      else if (wd) { if (wd.inCar) cars.push(this.car); }
       else { if (this.mode === 'tandem') cars.push(this.leader); cars.push(this.car); }
 
       ctx.globalCompositeOperation = 'source-over';
@@ -634,13 +797,16 @@
       this.fx.skids.draw(ctx, v);
       if (env.rain && Q.tier >= 2) { ctx.fillStyle = 'rgba(22,34,58,0.2)'; ctx.fillRect(v.x0, v.y0, v.x1 - v.x0, v.y1 - v.y0); }
       if (env.sun) this.city.drawShadows(ctx, v, env);
+      if (wd) wd.drawGround(ctx);
       for (const c of cars) DS.CarRender.drawShadow(ctx, c, env);
       this.city.drawLowProps(ctx, v, this.time, M);
+      if (wd) wd.drawActors(ctx);
       for (const c of cars) DS.CarRender.drawCar(ctx, c);
       this.fx.drawSmoke(ctx, v, M, W, H);
       const tall = this.city.collectTall(v, M, W, H);
       this.city.drawTallProps(ctx, cp, env, tall);
       this.city.drawSolids(ctx, v, cp, env, env.light, M, W, H);
+      if (wd) wd.drawAbove(ctx);
 
       if (env.light) {
         const l = this.lctx, lw = this.lc.width, lh = this.lc.height, ls = lw / W, lsy = lh / H;
@@ -654,6 +820,7 @@
         l.globalCompositeOperation = 'lighter';
         if (env.lamps) this.city.drawLightSources(l, env, tall, M, W, H);
         for (const c of cars) DS.CarRender.drawLights(l, c, env);
+        if (wd) wd.drawLights(l, env);
         this.fx.drawFlashes(l);
         l.globalCompositeOperation = 'source-over';
         this.fx.drawSmokeLight(l, v, M, W, H);
@@ -677,6 +844,7 @@
         this.city.drawEmissive(ctx, cp, env, this.time, tall);
         for (const c of cars) DS.CarRender.drawGlow(ctx, c, env);
       }
+      if (wd) wd.drawGlow(ctx, env);
       ctx.globalCompositeOperation = 'source-over';
       ctx.globalAlpha = 1;
       ctx.setTransform(1, 0, 0, 1, 0, 0);
