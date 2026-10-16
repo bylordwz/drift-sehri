@@ -6,6 +6,8 @@
 //   true dönerse tüketilir (ör. can doluyken false → eşya yerinde kalır).
 // - Gizli paketler (50): gizli köşelerde (U.rng(4242)); her biri +₺100, her 10'da bir ikramiye,
 //   50/50'de büyük ödül. Toplananlar save.ow.pickups.got içinde (base36 bit kümesi) kalıcıdır.
+// Yer üretimi yalnız şehir + nav geometrisine bağlıdır (oyun durumu, kırık direkler, alınmış park araçları ya da
+// başka modüllerin yüklenmesi sonucu değiştirmez); nav kurulmadan yaratılırsa ilk load/update'te üretilir.
 // Performans: güncelleme kare başına yalnız yakın listeyi (≤ birkaç öğe) tarar; tam tarama 0,25 s'de bir;
 // kare başına tahsis yok; simgeler bir kez küçük tuvallere pişirilir (görünen öğe başına tek drawImage).
 (function () {
@@ -13,21 +15,27 @@
   const PI = Math.PI, TAU = PI * 2;
 
   // ---------------- türler ----------------
-  // val: dünyaya giden değer (can/zırh puanı, yıldız, araç HP oranı, nitro süresi, kart adedi)
+  // val: dünyaya giden değer (can/zırh puanı, düşülecek yıldız, araç HP oranı, nitro süresi s, kart adedi)
+  // mul: nitro tork çarpanı (+%30); label: dünyanın etki mesajı için önerilen metin
   // foot/car: yayayken/araçtayken alınabilir mi; resp: yeniden doğma (s); blip: mini harita türü
   const KINDS = [
-    { id: 'health', name: 'Can', val: 50, foot: true, car: true, resp: 180, blip: 11, col: '#e8314f', hi: '#ff8a9c', glow: '#ff5a72' },
-    { id: 'armor', name: 'Zırh', val: 50, foot: true, car: true, resp: 180, blip: 12, col: '#2f7de1', hi: '#86bcff', glow: '#5aa2ff' },
-    { id: 'bribe', name: 'Rüşvet Rozeti', val: 1, foot: true, car: true, resp: 300, blip: 13, col: '#1f3f9e', hi: '#6a8ae6', glow: '#ffd23e' },
-    { id: 'wrench', name: 'Tamir Anahtarı', val: 0.5, foot: false, car: true, resp: 180, blip: 14, col: '#ea7d1c', hi: '#ffc27e', glow: '#ffae5a' },
-    { id: 'nitro', name: 'Nitro Tüpü', val: 10, foot: false, car: true, resp: 180, blip: 14, col: '#0f97bd', hi: '#7fe6ff', glow: '#5ae0ff' },
-    { id: 'cash', name: 'Para Çantası', val: 0, foot: true, car: true, resp: 180, blip: 14, col: '#22914a', hi: '#79dc98', glow: '#6aff9a' },
-    { id: 'card', name: 'Kefalet Kartı', val: 1, foot: true, car: true, resp: 180, blip: 14, col: '#8442d0', hi: '#c497ff', glow: '#c88cff' },
+    { id: 'health', name: 'Can', label: 'CAN +50', val: 50, foot: true, car: true, resp: 180, blip: 11, col: '#e8314f', hi: '#ff8a9c', glow: '#ff5a72' },
+    { id: 'armor', name: 'Zırh', label: 'ZIRH +50', val: 50, foot: true, car: true, resp: 180, blip: 12, col: '#2f7de1', hi: '#86bcff', glow: '#5aa2ff' },
+    { id: 'bribe', name: 'Rüşvet Rozeti', label: 'RÜŞVET: −1 YILDIZ', val: 1, foot: true, car: true, resp: 300, blip: 13, col: '#1f3f9e', hi: '#6a8ae6', glow: '#ffd23e' },
+    { id: 'wrench', name: 'Tamir Anahtarı', label: 'TAMİR +%50', val: 0.5, foot: false, car: true, resp: 180, blip: 14, col: '#ea7d1c', hi: '#ffc27e', glow: '#ffae5a' },
+    { id: 'nitro', name: 'Nitro Tüpü', label: 'NİTRO! 10 sn', val: 10, mul: 0.3, foot: false, car: true, resp: 180, blip: 14, col: '#0f97bd', hi: '#7fe6ff', glow: '#5ae0ff' },
+    { id: 'cash', name: 'Para Çantası', label: 'PARA ÇANTASI', val: 0, foot: true, car: true, resp: 180, blip: 14, col: '#22914a', hi: '#79dc98', glow: '#6aff9a' },
+    { id: 'card', name: 'Kefalet Kartı', label: 'KEFALET KARTI', val: 1, foot: true, car: true, resp: 180, blip: 14, col: '#8442d0', hi: '#c497ff', glow: '#c88cff' },
   ];
   const KI = {};
   for (let i = 0; i < KINDS.length; i++) KI[KINDS[i].id] = i;
   const CASH = KI.cash, CARD = KI.card;
   DS.PICKUP_KINDS = KINDS;
+  // mini harita blip renkleri (hud.js BK tablosu için öneri): 11 can, 12 zırh, 13 rüşvet, 14 diğer
+  const BLIP_COL = { 11: '#ff4f6a', 12: '#4f9bff', 13: '#ffd23e', 14: '#5fe08a' };
+  // yan etkinlik işaretleri (missions.js DS.SIDE konumları): üretim başka modüllerin yüklenip
+  // yüklenmediğine ya da sonradan değişmesine bağlı olmasın diye sabit kopya (kayıt bitleri = yuva)
+  const SIDE_PTS = [414.12, 337.55, 136.5, 821.25, 744, 292, 119.5, 90.71, 244.5, 199.25];
 
   // normal eşya yuvaları [tür, yer kategorisi]; kısıtlı kategoriler önce (28 adet)
   const SLOTS = [
@@ -335,13 +343,25 @@
       this.ow = null;
       this._icons = null; this._crate = null; this._glows = null;
       this.genMs = 0;
-      if (this.city && this.nav) {
-        const t0 = Date.now();
-        try { this._generate(); } catch (e) { console.error(e); }
-        this.genMs = Date.now() - t0;
-      }
+      this._gen = false;
+      this._ensureGen();
       this.setQuality(this.Q);
       this.reset();
+    }
+    // yerler bir kez üretilir (nav sonradan kurulduysa ilk update/load'da)
+    _ensureGen() {
+      if (this._gen) return true;
+      const W = this.W;
+      if (W) { if (!this.city) this.city = W.city || null; if (!this.nav) this.nav = W.nav || null; }
+      if (!this.city || !this.nav) return false;
+      this._gen = true;
+      const t0 = Date.now();
+      try { this._generate(); } catch (e) {
+        console.error(e);
+        this.n = 0; this.np = 0; this.rc.length = 0; this.pc.length = 0;
+      }
+      this.genMs = Date.now() - t0;
+      return true;
     }
 
     // ================= YER ÜRETİMİ (bir kez, deterministik) =================
@@ -445,7 +465,7 @@
       if (P.police) { ex(P.police); ex(P.police.sign); }
       if (P.phones) for (const p of P.phones) { ex(p); ex({ x: p.sx, y: p.sy }); }
       ex(P.crane); ex(P.driftGate);
-      if (DS.SIDE) for (const s of DS.SIDE) ex(s);
+      for (let i = 0; i < SIDE_PTS.length; i += 2) { G.ex.push(SIDE_PTS[i]); G.ey.push(SIDE_PTS[i + 1]); }
       // oyuncunun aldığı park araçları (kalıcılar hariç) yine dolu sayılır: üretim oyun durumundan bağımsız
       if (city.parked) for (const p of city.parked) if (p.gone && !p.perm && p.box) G.gone.push(p.box);
       // statik engel sorgusu (kırılmış direk/hidrant da dolu sayılır)
@@ -601,6 +621,7 @@
     }
     // canlı save.ow: ow.pickups = { got: '<base36>', card: 0|1 } (yoksa/bozuksa onarılır)
     load(ow) {
+      this._ensureGen();
       let p = ow && typeof ow === 'object' ? ow.pickups : null;
       if (!p || typeof p !== 'object' || Array.isArray(p)) p = {};
       decodeBits(p.got, this.got);
@@ -644,7 +665,9 @@
     // ================= GÜNCELLEME =================
     update(dt, W) {
       W = W || this.W;
-      if (!W || (this.n === 0 && this.np === 0)) return;
+      if (!W) return;
+      if (!this._gen && !this._ensureGen()) return;
+      if (this.n === 0 && this.np === 0) return;
       if (!(dt > 0)) dt = 0;
       else if (dt > 0.25) dt = 0.25;
       this.t += dt;
@@ -724,9 +747,14 @@
         if (wd && typeof wd.reward === 'function') { try { wd.reward(a, 'PARA ÇANTASI'); } catch (e) { console.error(e); } }
         emit(wd, 'cash', a, x, y);
       } else {
+        // kefalet kartı: en fazla bir tane taşınır (bir kez söylenir; uzaklaşınca yeniden kurulur)
+        if (k === CARD && this.st && this.st.card) {
+          if (wd && typeof wd.msg === 'function') { try { wd.msg('Kefalet Kartı zaten sende', 'mis', ''); } catch (e) { console.error(e); } }
+          this.armed[i] = 0; this.rearm[i] = Infinity;
+          return;
+        }
         let ok = false;
-        // kefalet kartı: en fazla bir tane taşınır
-        if (!(k === CARD && this.st && this.st.card) && wd && typeof wd.onPickup === 'function') {
+        if (wd && typeof wd.onPickup === 'function') {
           try { ok = wd.onPickup(d.id, d.val, x, y) === true; } catch (e) { console.error(e); ok = false; }
         }
         if (!ok) { this.armed[i] = 0; this.rearm[i] = this.t + REARM_T; return; }
@@ -742,23 +770,13 @@
       const n = this.nGot, wd = W.world, x = this.px[j], y = this.py[j];
       emit(wd, 'package', n, x, y);
       if (!wd) return;
-      const msg = typeof wd.msg === 'function' ? wd.msg.bind(wd) : null;
-      const pay = (a, why) => { if (typeof wd.reward === 'function') { try { wd.reward(a, why); } catch (e) { console.error(e); } } };
-      try {
-        if (n >= TOTAL) {
-          if (msg) msg('TÜM PAKETLER!', 'big', TOTAL + '/' + TOTAL + ' · +₺' + U.fmt(PKG_ALL));
-          pay(PKG_CASH, 'Gizli paket');
-          pay(PKG_ALL, 'TÜM PAKETLER');
-        } else if (n % 10 === 0) {
-          const b = PKG_STEP * (n / 10);
-          if (msg) msg(n + ' PAKET!', 'big', '+₺' + U.fmt(b));
-          pay(PKG_CASH, 'Gizli paket');
-          pay(b, n + ' PAKET İKRAMİYESİ');
-        } else {
-          if (msg) msg('GİZLİ PAKET ' + n + '/' + TOTAL, 'good', '');
-          pay(PKG_CASH, 'Gizli paket');
-        }
-      } catch (e) { console.error(e); }
+      const tag = 'GİZLİ PAKET ' + n + '/' + TOTAL;
+      let text = tag, kind = 'good', sub = '', bonus = 0;
+      if (n >= TOTAL) { bonus = PKG_ALL; text = 'TÜM PAKETLER!'; kind = 'big'; sub = TOTAL + '/' + TOTAL + ' · +₺' + U.fmt(PKG_ALL); }
+      else if (n % 10 === 0) { bonus = PKG_STEP * (n / 10); text = n + ' PAKET!'; kind = 'big'; sub = '+₺' + U.fmt(bonus); }
+      // her 10'da: büyük mesaj + tek para satırı ("+₺1.100 · GİZLİ PAKET 10/50"); diğerleri: sayaç + ₺100
+      if (typeof wd.msg === 'function') { try { wd.msg(text, kind, sub); } catch (e) { console.error(e); } }
+      if (typeof wd.reward === 'function') { try { wd.reward(PKG_CASH + bonus, bonus > 0 ? tag : 'Gizli paket'); } catch (e) { console.error(e); } }
     }
 
     // ================= ÇİZİM =================
@@ -782,7 +800,7 @@
     // zemin katmanı (world.drawGround): ekran uzayında tamsayı konumlu tek drawImage; ctx M'de bırakılır
     drawGround(ctx, W) {
       W = W || this.W;
-      if (!ctx || !W || !W.M || !W.view) return;
+      if (!ctx || !W || !W.M || !W.view || (this.n === 0 && this.np === 0)) return;
       if (!this._icons && !this._ensureIcons()) return;
       const M = W.M, v = W.view, t = this.t;
       const m0 = M[0], m1 = M[1], m2 = M[2], m3 = M[3], m4 = M[4], m5 = M[5];
@@ -886,6 +904,9 @@
 
   Pickups.TOTAL = TOTAL;
   Pickups.KINDS = KINDS;
+  Pickups.BLIP_COL = BLIP_COL;
+  // tür kimliğinden tanım ('health' → KINDS[0]); bilinmeyen → null
+  Pickups.kind = (id) => (typeof id === 'string' && Object.prototype.hasOwnProperty.call(KI, id) ? KINDS[KI[id]] : null);
   Pickups.encodeBits = encodeBits;
   Pickups.decodeBits = decodeBits;
   DS.Pickups = Pickups;

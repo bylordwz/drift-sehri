@@ -1403,6 +1403,7 @@
           if (!down && st !== PS.WAVE && st !== PS.GOTO) {
             // devrilip kalkan (kaçmaya başlayan) hasta yerinde beklemeye döner; halkası yeni yerine taşınır
             peds.st[i] = PS.WAVE;
+            if (peds.mvx) { peds.mvx[i] = 0; peds.mvy[i] = 0; }
             if (d2(peds.x[i], peds.y[i], p.x, p.y) > 16) {
               p.x = peds.x[i]; p.y = peds.y[i];
               if (nav.nearestLane(p.x, p.y, NaN, 30, PI, q)) { p.rx = q.x; p.ry = q.y; }
@@ -1414,6 +1415,13 @@
             if (peds.seek) peds.seek(i, W.px, W.py, 1.6);
           } else if (dp < nd) { nd = dp; near = p; }
         } else if (p.st === 1) {
+          // biniş sırasında ambulans uzaklaşırsa hasta yerinde beklemeye döner
+          if ((W.pspeed || 0) > PARA_SLOW * 2 || d2(W.px, W.py, p.rx, p.ry) > (PARA_R + 3) * (PARA_R + 3)) {
+            p.st = 0; a.boarding--;
+            const i = peds.find(p.uid);
+            if (i >= 0) { peds.st[i] = PS.WAVE; if (peds.mvx) { peds.mvx[i] = 0; peds.mvy[i] = 0; } }
+            continue;
+          }
           p.bT -= dt;
           if (p.bT <= 0) {
             this._dropPatient(p, W);
@@ -1514,7 +1522,7 @@
     }
 
     // ================= PARK HÂLİNDE SERVİS ARAÇLARI =================
-    // Hastane önünde çakar çubuklu ambulans, karakol önünde polis aracı (sürücüsüz, siren kapalı, rol 'mission',
+    // Hastane önünde çakar çubuklu ambulans, karakol önünde polis aracı (sürücüsüz, siren kapalı, rol 'civ',
     // keep). Oyuncu bindiğinde etiket bırakılır (inince sıradan araç olur); eksik araç 10 s'de bir denetlenir ve
     // oyuncu > 150 m uzakta ve nokta görünmezken yeniden doğar.
     _svcReset() {
@@ -1547,7 +1555,8 @@
         this._clearSpot(W, sp.x, sp.y, 5.5);
         const def = DS.vehById ? DS.vehById(s.id) : null;
         if (!def || def.id !== s.id) continue;
-        const veh = W.traffic.spawn({ def, setup: s.setup, x: sp.x, y: sp.y, h: sp.h, mode: 'parked', role: 'mission', keep: true, driver: false, tag: s.tag, siren: false, v: 0 });
+        // rol 'civ': çalınması sıradan bir park aracı gibi sayılır (polis aracı = STEAL_COP_CAR, ambulans = STEAL_PARKED)
+        const veh = W.traffic.spawn({ def, setup: s.setup, x: sp.x, y: sp.y, h: sp.h, mode: 'parked', role: 'civ', keep: true, driver: false, tag: s.tag, siren: false, v: 0 });
         if (veh) { veh.keep = true; veh.tag = s.tag; veh.driver = false; veh.siren = false; s.veh = veh; }
       }
     }

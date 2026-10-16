@@ -1727,11 +1727,20 @@
       return this._rbAt(W, sg, sg.v ? q.y : q.x, L.dir);
     }
     // parça sg üzerinde eksen konumu `along`'da, dir (±1: oyuncunun eksen boyunca geliş yönü) için barikat kur
+    // Sokak (15 m): yol ekseninde, tüm yolu kapatır. Cadde (22–24 m): iki araç tüm yolu kapatamaz; oyuncunun gidiş
+    // yönündeki yarıyı kapatır (merkez sağa w/4; dış uç duvara/bariyere değerse 1–2 m içeri). Karşı şeritten
+    // dolanmak mümkün (GTA'daki gibi).
     _rbAt(W, sg, along, dir) {
       if (along - sg.a < RB_END || sg.b - along < RB_END) return false;
+      if (!(sg.w >= 20)) return this._rbPlace(W, sg, along, dir, 0);
+      for (let k = 0; k < 3; k++) if (this._rbPlace(W, sg, along, dir, sg.w / 4 - k)) return true;
+      return false;
+    }
+    // co: barikat merkezinin yol ekseninden gidiş yönünün sağına uzaklığı (m)
+    _rbPlace(W, sg, along, dir, co) {
       const ux = sg.v ? 0 : dir, uy = sg.v ? dir : 0;      // oyuncunun gidiş yönü
-      const lx = -uy, ly = ux;                              // enine
-      const cx = sg.v ? sg.c : along, cy = sg.v ? along : sg.c;
+      const lx = -uy, ly = ux;                              // enine (gidiş yönünün sağı)
+      const cx = (sg.v ? sg.c : along) + lx * co, cy = (sg.v ? along : sg.c) + ly * co;
       const c = this.city;
       if (c && c.drift && c.inDrift(cx, cy, 8)) return false;
       if (this._vis(W, cx, cy, 10)) return false;
@@ -1748,6 +1757,9 @@
       const ext = 0.5 * (def.len * sa + def.wid * ca), off = RB_GAP / 2 + ext;
       const x0 = cx + lx * off, y0 = cy + ly * off, x1 = cx - lx * off, y1 = cy - ly * off;
       if (!this._freePt(cx, cy, 1.2) || !this._freePt(x0, y0, 1.3) || !this._freePt(x1, y1, 1.3)) return false;
+      // dış uçlar (kaldırım tarafı) da engelsiz olmalı
+      const oe = off + ext - 0.4;
+      if (!this._freePt(cx + lx * oe, cy + ly * oe, 0.4) || !this._freePt(cx - lx * oe, cy - ly * oe, 0.4)) return false;
       const rb = this.rbs[0].on ? (this.rbs[1].on ? null : this.rbs[1]) : this.rbs[0];
       if (rb === null) return false;
       // V biçimi: burunlar boşluğa ve gelen oyuncuya dönük

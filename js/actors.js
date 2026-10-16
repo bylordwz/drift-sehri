@@ -244,20 +244,21 @@
     g.globalAlpha = 1; g.fillStyle = '#2b2f37';
     g.beginPath(); g.arc(0, 0, 0.38, 0, TAU); g.fill();
   }
-  // çivi şeridi: sarı/siyah uyarı bantlı şerit, iki yana bakan gümüş dişler (+x şeridin uzun ekseni; görsel en 0.8 m)
+  // çivi şeridi: sarı/siyah uyarı bantlı şerit (0.6 m: çarpışma dikdörtgeniyle aynı), iki yana bakan gümüş dişler
+  // (+x şeridin uzun ekseni; dişlerle görsel en ~0.95 m)
   function paintSpikes(g, len) {
     const hl = len / 2;
     g.fillStyle = SPK_TOOTH;
     g.beginPath();
     for (let x = -hl + 0.3; x < hl - 0.2; x += 0.42) {
-      g.moveTo(x - 0.12, -0.2); g.lineTo(x, -0.4); g.lineTo(x + 0.12, -0.2);
-      g.moveTo(x + 0.09, 0.2); g.lineTo(x + 0.21, 0.4); g.lineTo(x + 0.33, 0.2);
+      g.moveTo(x - 0.13, -0.27); g.lineTo(x, -0.47); g.lineTo(x + 0.13, -0.27);
+      g.moveTo(x + 0.08, 0.27); g.lineTo(x + 0.21, 0.47); g.lineTo(x + 0.34, 0.27);
     }
     g.fill();
-    g.fillStyle = SPK_BAND; g.fillRect(-hl, -0.23, len, 0.46);
+    g.fillStyle = SPK_BAND; g.fillRect(-hl, -0.3, len, 0.6);
     g.fillStyle = SPK_CAP;
-    for (let x = -hl; x < hl - 1e-3; x += 1) g.fillRect(x, -0.23, Math.min(0.5, hl - x), 0.46);
-    g.lineWidth = 0.06; g.strokeStyle = INK; g.strokeRect(-hl, -0.23, len, 0.46);
+    for (let x = -hl; x < hl - 1e-3; x += 1) g.fillRect(x, -0.3, Math.min(0.5, hl - x), 0.6);
+    g.lineWidth = 0.07; g.strokeStyle = INK; g.strokeRect(-hl, -0.3, len, 0.6);
   }
 
   // ---------------- tekil ----------------
@@ -887,7 +888,7 @@
       else this._xDraw(ctx, er, ra, sx, sy, sc, -1);
     },
 
-    // Çivi şeridi (zemin): (x, y) merkez, h uzun eksen yönü, len uzunluk (m; dişlerle 0.8 m en). 1 drawImage.
+    // Çivi şeridi (zemin): (x, y) merkez, h uzun eksen yönü, len uzunluk (m; dişlerle ~0.95 m en). 1 drawImage.
     drawSpikes(ctx, x, y, h, len) {
       if (!this._ready) this.init();
       const L = len > 0 ? Math.round(len * 2) / 2 : 7;
