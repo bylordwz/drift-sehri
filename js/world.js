@@ -7,6 +7,8 @@
 //    sağlık/bayılma, tutuklanma, boyahane, güvenli ev (kayıt + garaj), hurda vinci, telefon/işaret/taksi.
 //  - Para (ödül/ceza), drift kasası, gün/gece ortamı, GPS + yol noktası + yön oku, HUD verisi, blipler,
 //    kayıt (save.ow), otomatik kayıt, kalite kancaları, ölçüm (prof) ve hata ayıklama API'si (§8.1).
+//  - Tur 2: eşyalar (DS.Pickups: can, zırh, rüşvet, tamir, nitro, para, kefalet kartı + 50 gizli paket), araç radyosu
+//    (DS.Radio), polis tırmanması çizimleri (barikat, çivi şeridi, helikopter), lastik patlaması, polis/ambulans işleri.
 // Şiddet çizgi film: kimse ölmez; yayalar devrilir (yıldızlar), oyuncu "BAYILDIN!" olur.
 // Sıcak döngülerde tahsis yok: kalıcı karalama nesneleri, tipli diziler, kayıt havuzu indeksleri.
 (function () {
@@ -31,6 +33,10 @@
   const PANTS_PLAYER = '#22262e';
   const ARROW_COL = '#ffd23e';
   const RING_HOME = '#ffb23e', RING_SPRAY = '#c86bff';
+  // tur 2: nitro ve lastik patlaması
+  const NITRO_T = 10, NITRO_MUL = 0.3;        // süre (s), tork artışı (+%30)
+  const FLAT_MU = 0.6, FLAT_DRAG = 2, FLAT_ROLL = 2.5;   // patlak lastik: tutuş ×0.6, hava/yuvarlanma direnci artar (son hız düşer)
+  const RADIO_POP = 2;                        // istasyon adı açılır yazısı (s)
 
   // ---------- gün / gece (§5.9) ----------
   // main.js ENV'i DS.ENV olarak dışa verir; Node testinde yoksa aynı değerlerin kopyası kullanılır
@@ -274,11 +280,13 @@
       this.game = game;
       this.city = game.city;
       this.nav = null; this.traffic = null; this.peds = null; this.walker = null; this.police = null; this.missions = null;
+      this.pickups = null; this.radio = null;
       this.state = 'off'; this.onFoot = false; this.inCar = false;
       this.playerVeh = null;
       this.hud = {
         onFoot: true, inCar: false, money: 0, hp: 100, carHp: -1, stars: 0, starFlash: false, bust: 0, bounty: 0,
         obj: '', objSub: '', timer: -1, prompt: '', enterLabel: '', actLabel: '', zone: '', zoneT: 0, clock: '21:00', mission: false,
+        armor: 0, nitro: 0, flat: false, radio: '', radioT: 0,
       };
       this.msgs = [];
       this.route = { pts: new Float32Array(512), n: 0, len: 0, ver: 0 };
@@ -305,6 +313,10 @@
       this._tmpPrompt = ''; this._tmpPromptT = 0;
       this._physAcc = 0; this._dAcc = 0;
       this._errs = {};
+      // tur 2: nitro (oyuncu aracı torku; bitince aynen geri), patlak lastik (tutuş/direnç; boyahane/garaj/araç değişince geri)
+      this._nitroT = 0; this._nitroP = null; this._nitroTq = 0; this._nitroFx = 0; this._nitroDur = NITRO_T;
+      this._flat = false; this._flatP = null; this._flatMu = 0; this._flatDrag = 0; this._flatRoll = 0; this._flatFx = 0;
+      this._flatVeh = null; this._flatDef = null; this._flatX = 0; this._flatY = 0;   // patlak lastikle bırakılan araç
       // binme adayları
       this._candV = null; this._candP = null; this._pk = [];
       this._actKind = 0; this._actIdx = -1;
@@ -318,7 +330,7 @@
       this._clockStr = '21:00';
       const g = game, W = {
         world: this, game: g, city: g.city, nav: null, fx: g.fx, audio: g.audio,
-        traffic: null, peds: null, walker: null, police: null, missions: null,
+        traffic: null, peds: null, walker: null, police: null, missions: null, pickups: null, radio: null,
         Q: null, soft: false,
         t: 0, dt: 0, clock: 21, env: g.env, night: true,
         px: 0, py: 0, ph: 0, pvx: 0, pvy: 0, pspeed: 0,
@@ -424,7 +436,18 @@
       W.walker = mk('walker', DS.Walker) || new MiniWalker(W);
       W.police = mk('police', DS.Police);
       W.missions = mk('missions', DS.Missions);
+      // tur 2: eşyalar (nav gerekir) ve araç radyosu (oyun sesine bağlanır; ses bağlamı yoksa sonra kendini kurar)
+      if (DS.Pickups) { try { W.pickups = new DS.Pickups(W); } catch (e) { this._err('pickups.new', e); W.pickups = null; } }
+      if (DS.Radio && !this.radio) {
+        try {
+          this.radio = new DS.Radio(this.game.audio);
+          const v = this.game.save.settings.radioVol;
+          this.radio.setVolume(typeof v === 'number' ? v : 0.6);
+        } catch (e) { this._err('radio.new', e); this.radio = null; }
+      }
+      W.radio = this.radio;
       this.traffic = W.traffic; this.peds = W.peds; this.walker = W.walker; this.police = W.police; this.missions = W.missions;
+      this.pickups = W.pickups;
       this._built = true;
       const AS = DS.ActorSprites;
       if (AS && AS.init) { try { AS.init(); } catch (e) { this._err('actors.init', e); } }
@@ -459,11 +482,28 @@
         try { mi.reset(); } catch (e) { this._err('missions.reset', e); }
         try { if (mi.load) mi.load(ow); } catch (e) { this._err('missions.load', e); }
       }
+      const pk = this.pickups;
+      if (pk) {
+        try { pk.reset(); } catch (e) { this._err('pickups.reset', e); }
+        try { pk.load(ow); } catch (e) { this._err('pickups.load', e); }
+      }
+      this._nitroT = 0; this._nitroP = null; this._flat = false; this._flatP = null; this._flatVeh = null; this._flatDef = null;
+      const rd = this.radio;
+      if (rd) {
+        try {
+          rd.setActive(false);
+          if (typeof ow.radio === 'number' && ow.radio >= 0 && rd.setStation) rd.setStation(ow.radio | 0);
+          const v = s.settings.radioVol;
+          rd.setVolume(typeof v === 'number' ? v : 0.6);
+        } catch (e) { this._err('radio.begin', e); }
+      }
+      this.hud.radioT = 0;
       // yaya oyuncu güvenli evin önünde
       const P = this.places, sh = P.safehouse, sp = sh.walker || sh.spawn;
       const wk = this.walker;
       wk.reset(sp.x, sp.y, sp.h);
       wk.hp = U.clamp(typeof ow.hp === 'number' ? ow.hp : 100, 1, 100);
+      wk.armor = typeof ow.armor === 'number' && ow.armor > 0 ? Math.min(100, ow.armor) : 0;
       wk.state = 'walk';
       // oyuncu aracı nesnesi yayayken kullanılmaz: kendi araç tanımında beklesin
       const car = g.car;
@@ -484,7 +524,7 @@
       if (I.setContext) I.setContext('foot');
       const b = document.body.classList;
       b.add('world'); b.add('onfoot');
-      this._au('setEngineVol', 0); this._au('setSiren', 0);
+      this._au('setEngineVol', 0); this._au('setSiren', 0); this._au('setRotor', 0);
       this._hudTick(0);
       if (!ow.tut.foot) {
         ow.tut.foot = true;
@@ -500,6 +540,9 @@
       const g = this.game, s = g.save;
       this.saveOw();
       const tr = this.traffic, pd = this.peds, po = this.police, mi = this.missions;
+      this._endNitro(); this._fixTires();
+      this._flatVeh = null; this._flatDef = null;
+      if (this.radio) { try { this.radio.setActive(false); this.radio.silence(); } catch (e) { this._err('radio.end', e); } }
       if (mi) { try { mi.reset(); } catch (e) { this._err('missions.reset', e); } }
       if (po) { try { po.reset(); } catch (e) { this._err('police.reset', e); } }
       if (tr) { try { tr.reset(); } catch (e) { this._err('traffic.reset', e); } }
@@ -514,7 +557,7 @@
       g.car.vx = g.car.vy = g.car.w = 0;
       const au = g.audio;
       if (au) {
-        this._au('setEngineVol', 1); this._au('setSiren', 0); this._au('horn', false); this._au('setLeaderVoice', null);
+        this._au('setEngineVol', 1); this._au('setSiren', 0); this._au('setRotor', 0); this._au('horn', false); this._au('setLeaderVoice', null);
         if (au.setVoice) au.setVoice(def.voice);
       }
       g.applySettings();      // env ayarlardan (toMenu önce mode = 'free' yapar)
@@ -536,7 +579,7 @@
       this.soft = isSoft ? !!DS.Quality.isSoft() : false;
       this.W.Q = Q; this.W.soft = this.soft;
       if (!this._built) return;
-      const sys = [this.traffic, this.peds, this.police, this.missions];
+      const sys = [this.traffic, this.peds, this.police, this.missions, this.pickups, this.radio];
       for (let i = 0; i < sys.length; i++) {
         const o = sys[i];
         if (o && typeof o.setQuality === 'function') { try { o.setQuality(Q); } catch (e) { this._err('setQuality' + i, e); } }
@@ -610,6 +653,8 @@
       const g = this.game, I = g.input;
       this.dt = dt;
       const eEnter = I.edge('enter'), eAct = I.edge('act'), eMap = I.edge('map');
+      const eRad = I.edge('radio'), eRadP = I.edge('radioPrev');
+      if ((eRad || eRadP) && this.state === 'car') this._radioStep(eRadP && !eRad ? -1 : 1);
       const atk = !!inp.attack && !this._atkPrev;
       this._atkPrev = !!inp.attack;
       if (eMap) { this.openMap(); return; }
@@ -679,7 +724,17 @@
         if (this.peds) { try { this.peds.update(dt, W); } catch (e) { this._err('peds.update', e); } }
         if (this.police) { try { this.police.update(dt, W); } catch (e) { this._err('police.update', e); } }
         if (this.missions) { try { this.missions.update(dt, W); } catch (e) { this._err('missions.update', e); } }
+        if (this.pickups) { try { this.pickups.update(dt, W); } catch (e) { this._err('pickups.update', e); } }
       }
+      // radyo: araçta (oynarken, enselenme/bayılma dışında) açık; update her dünya karesinde (yayayken bir kerelik hazırlık)
+      const rd = this.radio;
+      if (rd) {
+        try {
+          rd.setActive(this.inCar && g.state === 'play' && this.state !== 'busted' && this.state !== 'wasted');
+          rd.update(dt);
+        } catch (e) { this._err('radio.update', e); }
+      }
+      if (this._nitroT > 0 || this._flat) this._carMods(dt);
       // i. yaya çarpmaları  j. oyuncu yayaya çarpan araçlar
       this._pedHits(dt);
       if (!this.inCar && this.state !== 'wasted' && this.walker.hitByVehicles) {
@@ -857,7 +912,7 @@
         try { pd.spawnAt(d.x + c * 1.0 + s * 0.5, d.y + s * 1.0 - c * 0.5, o); } catch (e) { this._err('peds.spawnAt', e); }
       }
       v.driver = false;
-      if (crime) {
+      if (crime && !this._mTarget(v)) {
         this._crime('CARJACK', v.x, v.y);
         this._panic(v.x, v.y, 12, 0.6);
       }
@@ -879,10 +934,11 @@
         if (!v || !v.alive) { this._cancelEnter(); return; }
         if (e.jack && !e.popped) this._popDriver(v, true);
         e.burn = v.burnT;
+        e.flat = this._isFlatVeh(v);
         try { info = this.traffic.takeForPlayer(v); } catch (er) { this._err('traffic.takeForPlayer', er); info = null; }
         if (!info) { this._cancelEnter(); return; }
       }
-      this._enterCar(info, { jack: e.jack, lot, burn: e.burn });
+      this._enterCar(info, { jack: e.jack, lot, burn: e.burn, flat: !!e.flat });
     }
     // oyuncu araca geçer (animasyonsuz çekirdek)
     _enterCar(info, o) {
@@ -892,6 +948,9 @@
       const def = info.def;
       const setup = own ? g.carSetup(def.id) : Object.assign({}, LOT_BASE, info.setup, { upg: {} });
       car.setDef(def, setup);
+      // yeni fizik parametreleri (car.p): eski nitro/lastik durumu geçersiz; patlak bırakılan araçsa yeniden uygula
+      this._nitroT = 0; this._nitroP = null; this._flat = false; this._flatP = null;
+      if (o.flat) { this._applyFlat(); this._flatVeh = null; this._flatDef = null; }
       car.reset(info.x, info.y, info.h);
       car.vx = info.vx || 0; car.vy = info.vy || 0; car.w = info.w || 0;
       car.speed = Math.hypot(car.vx, car.vy);
@@ -1001,10 +1060,12 @@
         veh = tr.adoptFromPlayer(car, { role: pv.own ? 'player' : pv.role === 'player' ? 'civ' : pv.role, tag, hp: pv.hp, keep: pv.own || !!tag });
       } catch (e) { this._err('traffic.adoptFromPlayer', e); }
       if (veh && pv.own) this._own = veh;
+      if (veh && this._flat) { this._flatVeh = veh; this._flatDef = veh.def; this._flatX = veh.x; this._flatY = veh.y; }
       return veh;
     }
     _toFoot() {
       const g = this.game;
+      this._endNitro(); this._fixTires();
       this.playerVeh = null;
       this._pBurnT = -1; this._autoExit = false;
       this.state = 'foot';
@@ -1018,7 +1079,7 @@
     }
 
     // ================= ETKİLEŞİM =================
-    // bağlam: this._actKind 1 telefon, 2 garaj, 3 yan etkinlik, 4 taksi (+ _actIdx)
+    // bağlam: this._actKind 1 telefon, 2 garaj, 3 yan etkinlik, 4 taksi, 5 polis işi, 6 ambulans işi (+ _actIdx)
     _context() {
       const m = this.missions, g = this.game;
       let k = 0, idx = -1;
@@ -1035,6 +1096,8 @@
           if (m.markerAt) { try { idx = m.markerAt(car.x, car.y, 6, true); } catch (e) { this._err('missions.markerAt', e); idx = -1; } }
           if (idx >= 0) k = 3;
           else if (m.canTaxi) { let ok = false; try { ok = m.canTaxi(this.W); } catch (e) { this._err('missions.canTaxi', e); } if (ok) k = 4; }
+          if (k === 0 && m.canVigilante) { let ok = false; try { ok = m.canVigilante(this.W); } catch (e) { this._err('missions.canVigilante', e); } if (ok) k = 5; }
+          if (k === 0 && m.canParamedic) { let ok = false; try { ok = m.canParamedic(this.W); } catch (e) { this._err('missions.canParamedic', e); } if (ok) k = 6; }
         }
       }
       this._actKind = k; this._actIdx = idx;
@@ -1068,6 +1131,10 @@
         let ok = false;
         try { ok = !!m.start('taxi'); } catch (e) { this._err('missions.start', e); }
         if (!ok) this._prompt('Bu iş şu an başlatılamıyor', 1.6);
+      } else if (k === 5 || k === 6) {
+        let ok = false;
+        try { ok = !!m.start(k === 5 ? 'vig' : 'para'); } catch (e) { this._err('missions.start', e); }
+        if (!ok) this._prompt('Bu iş şu an başlatılamıyor', 1.6);
       }
     }
     _openPhone(idx) {
@@ -1076,6 +1143,7 @@
       if (m && m.phoneList) { try { data = m.phoneList(idx); } catch (e) { this._err('missions.phoneList', e); } }
       if (!data) data = { phone: idx, crew: { id: '', name: 'ANKESÖRLÜ TELEFON', col: '#38d9ff', respect: 0 }, items: [] };
       if (this.ow) this.ow.tut.phone = true;
+      if (this.radio) { try { this.radio.setActive(false); } catch (e) { this._err('radio.setActive', e); } }
       const au = this.game.audio;
       if (au && au.beep) { try { au.beep(660, 0.06, 0.05); } catch (e) { this._err('audio.beep', e); } }
       if (DS.WorldUI && DS.WorldUI.openPhone) this._ui('openPhone', data);
@@ -1087,6 +1155,8 @@
         return;
       }
       const g = this.game;
+      this._fixTires();
+      if (this.radio) { try { this.radio.setActive(false); } catch (e) { this._err('radio.setActive', e); } }
       this.autosave(true);
       if (!this.inCar) g.car.setDef(DS.carById(g.save.car), g.carSetup(g.save.car));
       if (DS.UI) { DS.UI.prev = 'world'; DS.UI.show('garage'); }
@@ -1173,6 +1243,7 @@
       this._sprayMoved = true;
       if (!pv) return;
       pv.hp = pv.maxHp; this._pBurnT = -1;
+      this._fixTires();
       if (!pv.own) {
         let col = pv.setup.color;
         for (let k = 0; k < 8 && col === pv.setup.color; k++) col = SPRAY_COLS[(Math.random() * SPRAY_COLS.length) | 0];
@@ -1265,7 +1336,7 @@
       r.hp = 0; r.burnT = -1;
       if (r.role === 'cop' && this.police) { try { this.police.onCopDamaged(r, byP); } catch (e) { this._err('police.onCopDamaged', e); } }
       if (r.driver && r.role !== 'cop') this._popDriver(r, false);
-      if (byP && r.role !== 'cop') this._crime('WRECK_CAR', r.x, r.y);
+      if (byP && r.role !== 'cop' && !this._mTarget(r)) this._crime('WRECK_CAR', r.x, r.y);
       if (this.traffic.toWreck) { try { this.traffic.toWreck(r); } catch (e) { this._err('traffic.toWreck', e); } }
       this._explode(r.x, r.y, r.setup && r.setup.color, r, byP);
     }
@@ -1354,7 +1425,7 @@
         if (cop) {
           const car = g.car, dx = b.x - car.x, dy = b.y - car.y, d = Math.hypot(dx, dy) || 1;
           if ((car.vx * dx + car.vy * dy) / d > 2) this._crime('HIT_COP_CAR', x, y, b);
-        } else if (vn > 7 && b.driver && b.role !== 'player') this._crime('HIT_CAR', x, y, b);
+        } else if (vn > 7 && b.driver && b.role !== 'player' && !this._mTarget(b)) this._crime('HIT_CAR', x, y, b);
       }
     }
     onVehWall(veh, vn, kind, x, y) {
@@ -1402,10 +1473,13 @@
     onBusted() {
       if (this.state === 'off' || this.state === 'busted' || this.state === 'wasted') return;
       if (this.state === 'enter') this._cancelEnter();
-      const po = this.police;
-      this._fine = 200 * (po ? po.stars : 0);
+      const po = this.police, pk = this.pickups;
+      let card = false;
+      if (pk && pk.useCard) { try { card = !!pk.useCard(); } catch (e) { this._err('pickups.useCard', e); } }
+      this._fine = card ? 0 : 200 * (po ? po.stars : 0);
       this.state = 'busted'; this._fT = 0; this._autoExit = false;
-      this.msg('ENSELENDİN!', 'big', this._fine > 0 ? 'Ceza ₺' + U.fmt(Math.min(this._fine, this.game.save.money)) : '');
+      if (card) { this._owDirty = true; this.msg('ENSELENDİN!', 'big', 'KEFALET KARTI KULLANILDI'); }
+      else this.msg('ENSELENDİN!', 'big', this._fine > 0 ? 'Ceza ₺' + U.fmt(Math.min(this._fine, this.game.save.money)) : '');
       this._au('jingle', 'busted'); this._au('horn', false);
     }
     _finishBusted() {
@@ -1487,6 +1561,150 @@
       this.autosave(true);
       if (r.kind !== 'taxi' && DS.WorldUI && DS.WorldUI.showResult) this._ui('showResult', r);
       else this.msg(r.pass ? 'GÖREV TAMAM!' : 'GÖREV BAŞARISIZ', 'big', r.note || '');
+    }
+    // ================= TUR 2: EŞYALAR, LASTİK, NİTRO, RADYO =================
+    // DS.Pickups çağırır: etki uygulandıysa true (false: eşya yerinde kalır). Para/paket yalnız ses (ödemeyi pickups yaptı).
+    onPickup(kind, value, x, y) {
+      if (this.state === 'off') return false;
+      const wk = this.walker, pv = this.playerVeh, po = this.police;
+      const K = DS.Pickups && DS.Pickups.kind ? DS.Pickups.kind(kind) : null;
+      let ok = false, mk = 'good', sub = '';
+      switch (kind) {
+        case 'health':
+          if (wk && wk.hp < 99.5) { wk.hp = Math.min(100, wk.hp + (value > 0 ? value : 50)); ok = true; }
+          break;
+        case 'armor': {
+          const a = wk && typeof wk.armor === 'number' && wk.armor > 0 ? wk.armor : 0;
+          if (wk && a < 99.5) { wk.armor = Math.min(100, a + (value > 0 ? value : 50)); ok = true; }
+          break;
+        }
+        case 'bribe': {
+          const st = po ? po.stars | 0 : 0;
+          if (st > 0 && po.setStars) {
+            const f = this.focus();
+            try { po.setStars(Math.max(0, st - Math.max(1, value | 0)), f.x, f.y); ok = true; } catch (e) { this._err('police.setStars', e); }
+            mk = 'cop';
+          }
+          break;
+        }
+        case 'wrench':
+          if (this.inCar && pv && pv.hp < pv.maxHp - 0.5) {
+            pv.hp = Math.min(pv.maxHp, pv.hp + (value > 0 ? value : 0.5) * pv.maxHp);
+            if (this._pBurnT >= 0 && pv.hp >= 0.15 * pv.maxHp) this._pBurnT = -1;
+            ok = true;
+          }
+          break;
+        case 'nitro':
+          if (this.inCar && this.state === 'car') { this._startNitro(value > 0 ? value : NITRO_T, K && K.mul > 0 ? K.mul : NITRO_MUL); ok = true; }
+          break;
+        case 'card':
+          ok = true; sub = 'Bir sonraki enselenme ücretsiz';
+          break;
+        case 'package':
+          this._beep(1568, 0.07, 0.05);
+          return true;
+        case 'cash':
+          return true;
+        default:
+          return false;
+      }
+      if (ok) {
+        this.msg(K && K.label ? K.label : String(kind).toLocaleUpperCase('tr-TR'), mk, sub);
+        this._au('chime');
+        this._owDirty = true;
+        this._hudT = 1;
+      }
+      return ok;
+    }
+    // DS.Police çağırır (çivi şeridinden geçildi, şerit başına bir kez): lastikler patlar
+    onSpikes(x, y) {
+      if (this.state === 'off' || !this.inCar) return;
+      if (!this._applyFlat()) return;
+      const g = this.game, car = g.car, fx = g.fx;
+      this.msg('LASTİKLER PATLADI!', 'big', 'Boyahane ya da garajda onarılır');
+      this._au('pop', 1.2); this._au('impact', 3.5);
+      if (fx.sparks && typeof x === 'number') fx.sparks(x, y, car.vx * 0.3, car.vy * 0.3, 14, 4);
+      g.cam.shake = Math.min(1.2, g.cam.shake + 0.35);
+      this._hudT = 1;
+    }
+    // patlak lastik: tutuş ×0.6, hava ve yuvarlanma direnci artar (son hız düşer); asıl değerler aynen saklanır
+    _applyFlat() {
+      const p = this.game.car.p;
+      if (!p || (this._flat && this._flatP === p)) return false;
+      this._flat = true; this._flatP = p;
+      this._flatMu = p.mu; this._flatDrag = p.drag; this._flatRoll = p.roll;
+      p.mu = p.mu * FLAT_MU; p.drag = p.drag * FLAT_DRAG; p.roll = p.roll * FLAT_ROLL;
+      return true;
+    }
+    // lastikleri onar (boyahane, garaj, araçtan inme / araç değişimi): aynı parametre nesnesindeyse asıl değerler geri
+    _fixTires() {
+      const p = this._flatP;
+      if (this._flat && p && this.game.car.p === p) { p.mu = this._flatMu; p.drag = this._flatDrag; p.roll = this._flatRoll; }
+      this._flat = false; this._flatP = null;
+    }
+    // patlak lastikle bırakılan araç kaydı mı (havuz yuvası başka araca geçtiyse tanım/konum tutmaz)
+    _isFlatVeh(v) {
+      return !!v && v === this._flatVeh && v.alive === true && v.def === this._flatDef &&
+        Math.abs(v.x - this._flatX) < 8 && Math.abs(v.y - this._flatY) < 8;
+    }
+    // nitro: sec saniye +mul tork (oyuncu aracı); sürerken yeniden alınırsa süre başa döner
+    _startNitro(sec, mul) {
+      const p = this.game.car.p;
+      if (!(this._nitroT > 0 && this._nitroP === p)) { this._nitroP = p; this._nitroTq = p.torque; p.torque = this._nitroTq * (1 + mul); }
+      this._nitroT = sec; this._nitroDur = sec; this._nitroFx = 0;
+    }
+    _endNitro() {
+      const p = this._nitroP;
+      if (p && this.game.car.p === p) p.torque = this._nitroTq;
+      this._nitroT = 0; this._nitroP = null;
+    }
+    // nitro süresi ve alevleri, patlak lastik kıvılcımları (yalnız biri etkinken çağrılır)
+    _carMods(dt) {
+      const g = this.game, car = g.car;
+      if (this._nitroT > 0) {
+        if (!this.inCar || car.p !== this._nitroP) { this._nitroT = 0; this._nitroP = null; }
+        else {
+          this._nitroT -= dt;
+          if (this._nitroT <= 0) this._endNitro();
+          else if (car.thr > 0.5 && car.speed > 2) {
+            this._nitroFx -= dt;
+            if (this._nitroFx <= 0) { this._nitroFx = 0.22; if (g.backfire) g.backfire(car, 0.75, true); }
+          }
+        }
+      }
+      if (this._flat) {
+        if (!this.inCar || car.p !== this._flatP) { this._flat = false; this._flatP = null; }
+        else if (car.speed > 6) {
+          this._flatFx -= dt;
+          if (this._flatFx <= 0) {
+            this._flatFx = 0.2;
+            const fx = g.fx, c = Math.cos(car.h), s = Math.sin(car.h), L = car.p.len * 0.32;
+            const x = car.x - c * L, y = car.y - s * L;
+            if (fx.sparks && this.W.isVisible(x, y, 2)) fx.sparks(x, y, car.vx * 0.4, car.vy * 0.4, 3, 2.5);
+          }
+        }
+      }
+    }
+    // polis işi şüphelisi gibi görev hedefleri: çarpma/patlatma/gasp suç sayılmaz
+    _mTarget(v) {
+      const m = this.missions;
+      if (!m || !m.isMissionTarget || !v) return false;
+      try { return !!m.isMissionTarget(v); } catch (e) { return false; }
+    }
+    // radyo istasyonu (T / Shift+T, kumanda sağ, dokunmatik RADYO): adı 2 s gösterilir
+    _radioStep(d) {
+      const rd = this.radio;
+      if (!rd) return;
+      let name = '';
+      try { name = d < 0 ? rd.prev() : rd.next(); if (typeof name !== 'string' || !name) name = rd.stationName(); } catch (e) { this._err('radio.next', e); return; }
+      const h = this.hud;
+      h.radio = name || ''; h.radioT = RADIO_POP;
+      this._hudT = 1;
+      this._owDirty = true;
+    }
+    _beep(f, d, v) {
+      const au = this.game.audio;
+      if (au && au.beep) { try { au.beep(f, d, v); } catch (e) { this._err('audio.beep', e); } }
     }
     msg(text, kind, sub) {
       const m = this.msgs;
@@ -1682,6 +1900,10 @@
       h.onFoot = !this.inCar; h.inCar = this.inCar;
       h.money = g.save.money;
       h.hp = Math.max(0, Math.round(wk.hp));
+      h.armor = typeof wk.armor === 'number' && wk.armor > 0 ? Math.round(wk.armor) : 0;
+      h.nitro = this._nitroT > 0 ? U.sat(this._nitroT / (this._nitroDur || NITRO_T)) : 0;
+      h.flat = this.inCar && this._flat;
+      if (h.radioT > 0) h.radioT = this.inCar ? Math.max(0, h.radioT - step) : 0;
       h.carHp = this.inCar && pv ? U.sat(pv.hp / pv.maxHp) : -1;
       h.stars = po ? po.stars | 0 : 0;
       h.starFlash = po ? !!po.flash : false;
@@ -1703,6 +1925,8 @@
       else if (k === 2) { act = 'GARAJ'; prompt = 'E — Garaj'; }
       else if (k === 3) { act = 'BAŞLAT'; prompt = 'E — Başlat'; }
       else if (k === 4) { act = 'TAKSİ'; prompt = 'E — Taksi işi'; }
+      else if (k === 5) { act = 'POLİS İŞİ'; prompt = 'E — Polis işi'; }
+      else if (k === 6) { act = 'AMBULANS'; prompt = 'E — Ambulans işi'; }
       if (this._tmpPromptT > 0 && this._tmpPrompt) prompt = this._tmpPrompt;
       h.prompt = prompt; h.actLabel = act; h.enterLabel = enter;
       // bölge adı (değişince 3 s)
@@ -1747,9 +1971,18 @@
           if (v && v.alive && v.mode !== VM.WRECK) put(v.x, v.y, 2);
         }
       }
+      // helikopter ve barikatlar (k 2; barikat araçları police.cops'ta değil)
+      if (po && po.extraBlips) {
+        try { const r = po.extraBlips(out, n); if (typeof r === 'number' && r >= n && r <= MAX) n = r; } catch (e) { this._err('police.extraBlips', e); }
+      }
       if (this._ownValid() && !(this.inCar && this.playerVeh && this.playerVeh.own)) put(this._own.x, this._own.y, 8);
       if (P.spray) put(P.spray.x, P.spray.y, 4);
       if (P.safehouse) put(P.safehouse.x, P.safehouse.y, 5);
+      // yakındaki eşyalar (11 can, 12 zırh, 13 rüşvet, 14 diğer; gizli paketler yok)
+      const pk = this.pickups;
+      if (pk && pk.blips && n < MAX) {
+        try { const r = pk.blips(out, n); if (typeof r === 'number' && r >= n && r <= MAX) n = r; } catch (e) { this._err('pickups.blips', e); }
+      }
       return n;
     }
     mapPois() {
@@ -1769,6 +2002,7 @@
           if (x === x && y === y) out.push({ x, y, k: 6, name: s.name || 'Etkinlik' });
         }
       }
+      if (this.pickups && this.pickups.mapPois) { try { this.pickups.mapPois(out); } catch (e) { this._err('pickups.mapPois', e); } }
       return out;
     }
 
@@ -1776,6 +2010,7 @@
     openMap() {
       if (this.state === 'off') return;
       if (this.ow) this.ow.tut.map = true;
+      if (this.radio) { try { this.radio.setActive(false); } catch (e) { this._err('radio.setActive', e); } }
       this._ui('openMap');
     }
     closeMap() { this._ui('closeMap'); }
@@ -1839,8 +2074,12 @@
       ow.v = 1;
       ow.clock = Math.round(this.clock * 1000) / 1000;
       ow.hp = U.clamp(Math.round(this.walker ? this.walker.hp : 100), 1, 100);
+      const wa = this.walker ? this.walker.armor : 0;
+      ow.armor = typeof wa === 'number' && wa > 0 ? Math.min(100, Math.round(wa)) : 0;
       const m = this.missions;
       if (m && m.save) { try { m.save(ow); } catch (e) { this._err('missions.save', e); } }
+      if (this.pickups) { try { this.pickups.save(ow); } catch (e) { this._err('pickups.save', e); } }
+      if (this.radio && typeof this.radio.station === 'number') ow.radio = this.radio.station;
       g.save.ow = ow;
       this._owDirty = false;
     }
@@ -1859,6 +2098,8 @@
       if (AS && AS.beginFrame) { try { AS.beginFrame(ctx, M, g.cam.rot); } catch (e) { this._err('actors.beginFrame', e); } }
       if (this.traffic) { try { this.traffic.drawSignals(ctx, W); } catch (e) { this._err('traffic.drawSignals', e); } }
       if (this.missions && this.missions.drawGround) { try { this.missions.drawGround(ctx, W); } catch (e) { this._err('missions.drawGround', e); } }
+      if (this.police && this.police.drawGround) { try { this.police.drawGround(ctx, W); } catch (e) { this._err('police.drawGround', e); } }
+      if (this.pickups) { try { this.pickups.drawGround(ctx, W); } catch (e) { this._err('pickups.drawGround', e); } }
       if (AS && AS.drawRing) {
         const P = this.places;
         if (P) {
@@ -1900,6 +2141,7 @@
       if (this.state === 'off') return;
       const t0 = now(), g = this.game, W = this.W, M = g.M, AS = DS.ActorSprites;
       if (this.missions && this.missions.drawAbove) { try { this.missions.drawAbove(ctx, W); } catch (e) { this._err('missions.drawAbove', e); } }
+      if (this.police && this.police.drawAbove) { try { this.police.drawAbove(ctx, W); } catch (e) { this._err('police.drawAbove', e); } }
       // yön oku (GTA1): oyuncunun yanında, hedefi gösterir
       const T = this._so;
       if (AS && AS.drawArrow && (this.state === 'foot' || this.state === 'car') && this._target(T)) {
@@ -1923,10 +2165,14 @@
       this._dAcc += now() - t0;
     }
     drawLights(lctx, env) {
-      if (this.state === 'off' || !this.traffic) return;
-      const t0 = now();
-      const n = this.Q && typeof this.Q.carLights === 'number' ? this.Q.carLights : 2;
-      try { this.traffic.drawLights(lctx, this.W, n); } catch (e) { this._err('traffic.drawLights', e); }
+      if (this.state === 'off') return;
+      const t0 = now(), W = this.W;
+      if (this.traffic) {
+        const n = this.Q && typeof this.Q.carLights === 'number' ? this.Q.carLights : 2;
+        try { this.traffic.drawLights(lctx, W, n); } catch (e) { this._err('traffic.drawLights', e); }
+      }
+      if (this.police && this.police.drawLights) { try { this.police.drawLights(lctx, W); } catch (e) { this._err('police.drawLights', e); } }
+      if (this.pickups) { try { this.pickups.drawLights(lctx, W); } catch (e) { this._err('pickups.drawLights', e); } }
       this._dAcc += now() - t0;
     }
     drawGlow(ctx, env) {
@@ -1981,6 +2227,7 @@
       try {
         if (au.setEngineVol) au.setEngineVol(this.inCar ? 1 : 0);
         if (au.setSiren) au.setSiren(po ? po.sirenLevel() : 0);
+        if (au.setRotor) au.setRotor(po && po.rotorLevel ? po.rotorLevel() : 0);
         if (au.horn) au.horn(!!this._hornIn);
       } catch (e) { this._err('audio.frame', e); }
       // en yakın NPC aracı = ikinci motor sesi (ses değişimi en fazla 2 s'de bir)
@@ -2052,6 +2299,11 @@
             t: w.t, traffic: tc, peds: pc,
             mission: { id: w._missionId(), state: m ? m.state : 'idle', obj: ob && ob.text ? ob.text : '' },
             clock: w.clock, light: !!g.env.light, tier: g.Q ? g.Q.tier : -1,
+            armor: w.walker && w.walker.armor > 0 ? w.walker.armor : 0, nitro: w._nitroT, flat: !!w._flat,
+            torque: g.car.p.torque, mu: g.car.p.mu,
+            radio: w.radio ? { station: w.radio.station, name: w.radio.stationName(), active: !!w.radio.active, playing: w.radio.isPlaying ? !!w.radio.isPlaying() : false } : null,
+            packages: w.pickups ? w.pickups.count().packages : -1, card: w.pickups && w.pickups.hasCard ? w.pickups.hasCard() : false,
+            police: po ? { rbs: po.rbs ? po.rbs.filter((r) => r.on).length : 0, spikes: po.rbs ? po.rbs.filter((r) => r.on && r.spk).length : 0, heli: po.heli ? !!po.heli.on : false, rotor: po.rotorLevel ? po.rotorLevel() : 0 } : null,
           };
         },
         teleport(x, y, h) { w._teleport(x, y, h); },
@@ -2083,10 +2335,10 @@
           if (!v || !v.alive || v.mode === VM.WRECK) return false;
           const jack = v.driver === true;
           if (jack) { if (tr.hold) tr.hold(v); w._popDriver(v, true); }
-          const burn = v.burnT;
+          const burn = v.burnT, flat = w._isFlatVeh(v);
           const info = tr.takeForPlayer(v);
           if (!info) return false;
-          w._enterCar(info, { jack, burn });
+          w._enterCar(info, { jack, burn, flat });
           return true;
         },
         exit() {
