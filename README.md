@@ -1,6 +1,6 @@
 # Drift Şehri
 
-Tarayıcıda ve mobilde oynanan, üstten görünüşlü 2D şehir içi drift oyunu. Kurulum veya bağımlılık gerektirmez; saf HTML5 Canvas, JavaScript ve WebAudio ile yazıldı. Oynanış hissi mobil drift oyunu FR Legends'tan esinlenir (gaz/fren/el freni pedalları, debriyaj atma, açı-hız-yakınlık puanlaması, tandem takip). Oyundan hiçbir görsel, isim veya marka kullanılmamıştır.
+Tarayıcıda ve mobilde oynanan, üstten görünüşlü 2D açık dünya şehir ve drift oyunu (GTA 1/2 ve Chinatown Wars tarzı). Kurulum veya bağımlılık gerektirmez; saf HTML5 Canvas, JavaScript ve WebAudio ile yazıldı. Oynanış hissi mobil drift oyunu FR Legends'tan esinlenir (gaz/fren/el freni pedalları, debriyaj atma, açı-hız-yakınlık puanlaması, tandem takip). Oyundan hiçbir görsel, isim veya marka kullanılmamıştır.
 
 ## Oynamak
 
@@ -15,6 +15,13 @@ GitHub Pages ile yayınlamak için: Settings → Pages → Source: `main` dalı,
 
 ## Modlar
 
+- **Açık Şehir (ana mod):** Şehirde yürü, istediğin aracı çal, trafikte drift at, polisten kaç, görev al.
+  - **Yaya ve araç:** yürü/koş, park etmiş araçları veya trafikteki araçları çal (sürücü kaçar). Kendi garaj aracın güvenli evin önünde bekler.
+  - **Yaşayan şehir:** sağdan akan trafik (trafik ışıkları, göbekler, korna, sirene yol verme), kaldırımda yürüyen ve yaya geçidinden geçen yayalar.
+  - **Aranma (5 yıldız):** suç işlerken polis veya yayalar görürse yıldız artar. Polis arabaları kovalar, sıkıştırır ve çarpar; yaya polisler tutuklar (**ENSELENDİN!**). Görüş dışında kalarak, yıldız sayısı kadar polis aracını çarpıp devre dışı bırakarak ya da **boyahaneye** girerek kurtulursun.
+  - **Hasar:** araçlar duman → alev → çizgi film patlaması aşamalarından geçer. Can biterse **BAYILDIN!** (hastane ücreti). Kan ve ölüm yok.
+  - **Görevler:** 12 ankesörlü telefonda 3 ekibin 12 görevi (teslimat, kırılgan kargo, sipariş araç çalıp vince götürme, şehir içi drift, kontrol noktalı yarış, polisten kaçış). Ayrıca drift/yarış etkinlik noktaları ve taksi işi var. Madalyalar, saygınlık ve "TEKRAR DENE" de var.
+  - **Diğer:** gün/gece döngüsü, GPS rotası, tam ekran harita (yol noktası koyma), güvenli evde otomatik kayıt ve garaj.
 - **Serbest sürüş:** 9×9 bloklu şehirde dolaş, drift kombosu kur. Drift parkında sekiz çizmek için iki lastik adası, klip noktaları ve dubalar var.
 - **Tandem:** Şehir sokaklarında drift atan yapay zekâ lideri takip et. Hakem yakınlığı (2–9 m ideal), açı uyumunu ve çizgiyi puanlar. 65 puan üstü kazanır, temas ve lideri geçmek ceza alır.
 - **Garaj:** 5 araç (HACHI, KUMO, KAZE, ONI, RONIN), boya, kaplama, jant, arka kanat, alt neon, duman rengi ve performans parçaları (motor, turbo, lastik, açı kiti, diferansiyel).
@@ -30,6 +37,17 @@ GitHub Pages ile yayınlamak için: Settings → Pages → Source: `main` dalı,
 | Debriyaj atma | Gaza hızlıca iki kez dokun | Shift | X |
 | Vites (manuel) | + / − | E / Q | RB / LB |
 | Kamera, yola dön, duraklat | — | C, R, P / Esc | Select, Y, Start |
+
+### Açık Şehir kontrolleri
+
+| İşlem | Dokunmatik | Klavye | Oyun kumandası |
+|---|---|---|---|
+| Yürü / koş | Sol yüzen joystick (sonuna kadar it: koş) | W A S D / oklar, Shift koş | Sol çubuk, A koş |
+| İt (yumruk) | İT | Boşluk | B |
+| Araca bin / in | BİN / İN | F / Enter | Y |
+| Telefon, görev başlat, taksi, garaj | ETKİLEŞ | E | X (araçta D-pad yukarı) |
+| Korna | KORNA | H | L3 |
+| Harita | HARİTA veya mini haritaya dokun | M / Tab | Back |
 
 ## Puanlama
 
@@ -57,6 +75,8 @@ index.html            arayüz iskeleti
 css/style.css         görünüm, mobil düzen
 js/util.js            yardımcılar
 js/data.js            araçlar, parçalar, paletler
+js/vehicles.js        açık şehir araçları (sedan, taksi, polis, kamyonet, kamyon, spor), yaya paletleri
+js/quality.js         grafik kalite kademeleri, otomatik kalite
 js/collide.js         OBB çarpışma ve impuls çözümü
 js/city.js            şehir üretimi, çizimi, çarpışma ızgarası
 js/car.js             araç fiziği ve çizimi
@@ -66,5 +86,13 @@ js/input.js           klavye, dokunmatik, eğim, kumanda
 js/score.js           drift puanlama
 js/tandem.js          yapay zekâ lider ve hakem
 js/ui.js              menüler, garaj, göstergeler
+js/nav.js             şerit grafiği, yaya grafiği, trafik ışıkları, görüş hattı, rota (A*)
+js/actors.js          araç/yaya sprite önbelleği, işaretler
+js/traffic.js         trafik yapay zekâsı ve araç kayıtları
+js/peds.js            yayalar ve yaya oyuncu
+js/police.js          aranma seviyesi, polis yapay zekâsı, tutuklama
+js/missions.js        görevler, ekipler, taksi, etkinlikler
+js/world.js           açık dünya çekirdeği (bin/in, hasar, kayıt, gün/gece, GPS)
+js/hud.js             açık şehir göstergeleri, harita, telefon ekranı
 js/main.js            oyun döngüsü, kamera, katmanlı çizim
 ```

@@ -311,8 +311,19 @@
   // ================= ÇİZİM =================
   const PX = 26;
   const PARK_COLORS = ['#8a8f98', '#f2efe6', '#1b1d22', '#c8102e', '#1d4e9e', '#b5a27a', '#2f6f4f', '#7fd1ff'];
-  // açık dünya kaplamaları ('polis', 'taksi'): garaj listesinde (DS.LIVERIES) yoklar
+  // açık dünya kaplamaları ('polis', 'taksi', 'ambulans'): garaj listesinde (DS.LIVERIES) yoklar
   const POLIS_WHITE = '#f4f6f8', POLIS_BLUE = '#1f4fa8', POLIS_BAND = 0.15;
+  // 'ambulans' (Tur 2): beyaz gövde, iki yanda kırmızı şerit, tavanda ve kaputta kırmızı haç; çubuk kırmızı/kırmızı
+  const AMB_RED = '#d7182a', AMB_BAND = 0.11;
+  // Kırmızı haç (merkez 0,0; s = kol boyu toplamı, k = kol kalınlığı oranı); tek yol + tek dolgu
+  function crossPath(g, cx, cy, s, k) {
+    const a = s / 2, b = (s * k) / 2;
+    g.beginPath();
+    g.rect(cx - a, cy - b, s, 2 * b);
+    g.rect(cx - b, cy - a, 2 * b, a - b);
+    g.rect(cx - b, cy + b, 2 * b, a - b);
+    g.fill();
+  }
   // Kaputtaki "POLİS" yazısı yazı tipinden bağımsız blok harflerle (3×5 ızgara, İ'nin noktası üst satırda):
   // fillText'in ilk kullanımdaki yazı tipi arama gecikmesi (yavaş makinede ~9 ms) olmaz, her sistemde aynı görünür
   const POLIS_TXT = [
@@ -396,8 +407,8 @@
       const L = def.len, W = def.wid, sh = def.shape;
       const hl = L / 2, hw = W / 2;
       const lv = setup.livery;
-      // polis kaplaması her zaman beyaz gövde üstüne çizilir
-      const col = lv === 'polis' ? POLIS_WHITE : setup.color;
+      // polis ve ambulans kaplamaları her zaman beyaz gövde üstüne çizilir
+      const col = lv === 'polis' || lv === 'ambulans' ? POLIS_WHITE : setup.color;
       const xW0 = hl - L * sh.hood, xW1 = xW0 - L * sh.wind, xR1 = xW1 - L * sh.roof, xB1 = xR1 - L * sh.rear;
       const cw = hw * sh.cabin, rw = cw * 0.86;
 
@@ -461,6 +472,12 @@
         g.fillStyle = '#121418';
         g.fillRect(hl - 0.13, -hw - 0.1, 0.25, W + 0.2);
         g.fillRect(-hl - 0.12, -hw - 0.1, 0.25, W + 0.2);
+      } else if (lv === 'ambulans') {
+        // iki yanda boydan boya kırmızı şerit
+        const bw = W * AMB_BAND;
+        g.fillStyle = AMB_RED;
+        g.fillRect(-hl - 0.1, -hw - 0.1, L + 0.2, bw + 0.1);
+        g.fillRect(-hl - 0.1, hw - bw, L + 0.2, bw + 0.1);
       }
       g.restore();
 
@@ -490,6 +507,10 @@
         g.fillStyle = POLIS_BLUE;
         polisText(g, W * (1 - 2 * POLIS_BAND) * 0.94, (hl - xW0) * 0.55);
         g.restore();
+      } else if (lv === 'ambulans') {
+        // kaputta küçük kırmızı haç (yalnızca yapımda bir kez)
+        g.fillStyle = AMB_RED;
+        crossPath(g, (xW0 + hl) / 2, 0, Math.min((hl - xW0) * 0.7, W * 0.3), 0.34);
       }
 
       // yan camlar
@@ -543,13 +564,20 @@
           g.fillRect(xR1 + i * st, rw - q, st, q);
         }
       }
-      const rx = (xW1 + xR1) / 2;
+      // çakar/taksi lambası konumu: tavan ortası (shape.barF varsa tavan boyunca o oranda; bkz. roofX)
+      const rx = sh.barF === undefined ? (xW1 + xR1) / 2 : xW1 - L * sh.roof * sh.barF;
+      if (lv === 'ambulans') {
+        // tavanda büyük kırmızı haç (çubuk tavanın önündeyse arka bölümde, yoksa çubuğun gerisinde)
+        const rl = xW1 - xR1, f = sh.barF !== undefined && sh.barF < 0.35 ? 0.6 : setup.bar ? 0.78 : 0.5;
+        g.fillStyle = AMB_RED;
+        crossPath(g, xW1 - rl * f, 0, Math.min(rw * 1.5, rl * (setup.bar && f > 0.7 ? 0.3 : 0.42)), 0.32);
+      }
       if (setup.bar) {
         // tavan çakar çubuğu (sönük hâli; yanıp sönen parlaklık ActorSprites.drawSirenBar'da)
         g.fillStyle = '#15171b'; g.fillRect(rx - 0.175, -0.55, 0.35, 1.1);
         g.globalAlpha = 0.55;
         g.fillStyle = '#ff2a2a'; g.fillRect(rx - 0.135, -0.51, 0.27, 0.42);
-        g.fillStyle = '#2a6bff'; g.fillRect(rx - 0.135, 0.09, 0.27, 0.42);
+        g.fillStyle = lv === 'ambulans' ? '#ff2a2a' : '#2a6bff'; g.fillRect(rx - 0.135, 0.09, 0.27, 0.42);
         g.globalAlpha = 0.9;
         g.fillStyle = '#f4f6f8'; g.fillRect(rx - 0.09, -0.07, 0.18, 0.14);
         g.globalAlpha = 1;
@@ -604,6 +632,7 @@
     // Tavan ortasının araç ekseni üzerindeki konumu (m, ağırlık merkezinden öne +): çakar/taksi lambası
     roofX(def) {
       const L = def.len, sh = def.shape;
+      if (sh.barF !== undefined) return L / 2 - L * (sh.hood + sh.wind + sh.roof * sh.barF);
       return L / 2 - L * (sh.hood + sh.wind + sh.roof / 2);
     },
 

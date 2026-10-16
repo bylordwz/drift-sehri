@@ -10,7 +10,13 @@
 //    saf takip, akış alanı ile kavşak kavşak rota, ÇARP (≥2★), SIKIŞTIR (yavaş oyuncu), yayaya 8 m kala dur,
 //    sıkışınca geri manevra, ≤2★ drift parkına girmez (kapıda bekler), devre dışı kalınca durur.
 //  - Tutuklama çubuğu (bust): yalnız ≥1★; dolunca W.world.onBusted() bir kez.
-// Çizim yok (siren çubuklarını trafik çizer); ses world üzerinden (sirenLevel).
+//  - Tur 2 tırmanma (research §13.3): ≥3★ barikat (5★'da 2): oyuncunun hız yönünde yol boyu 90–150 m ileride,
+//    görüş dışında bir yol parçasına çapraz 2 park polis aracı (aralarında ~3 m boşluk); ≥4★ boşluğun önünde
+//    7 m çivi şeridi (oyuncu aracının merkezi geçince W.world.onSpikes(x, y) bir kez, şerit kalkar);
+//    ≥4★ polis helikopteri: 32 m/s yaklaşır, 25 m yarıçapla döner, ışıldak lekesi oyuncuyu 0.6 s gecikmeyle
+//    izler; leke (r 9 m) oyuncunun üstündeyken binalardan bağımsız tanıktır ("görülüyor"). Hasar almaz.
+// Çizim: siren çubuklarını trafik çizer; çivi şeridi, helikopter ve ışıldak burada (drawGround/drawAbove/
+// drawLights, ActorSprites ile). Ses world üzerinden (sirenLevel, rotorLevel).
 // Sıcak döngülerde tahsis yok: tipli diziler, yeniden kullanılan geçici nesneler, takas-sil.
 (function () {
   const DS = window.DS, U = DS.U;
@@ -41,6 +47,29 @@
   const FOOT_V = [0, 4.5, 4.5, 5.5, 5.5, 5.5];       // yaya polis koşu hızı
   const ANG50 = (50 * PI) / 180;
 
+  // ---------- tur 2: tırmanma ayarları ----------
+  const RB_WANT = [0, 0, 0, 1, 1, 2];                // yıldız başına etkin barikat
+  const RB_DS = [90, 102, 114, 126, 138, 150];       // oyuncunun önünde denenen yol boyu mesafeler (m)
+  const RB_D0 = 90, RB_D1 = 150;
+  const RB_CD = 15, RB_LIFE = 60, RB_PAST = 150;     // yeni barikat aralığı (s), ömür (s), geride kalma (m)
+  const RB_GAP = 3, RB_ANG = (65 * PI) / 180;        // araçlar arası boşluk (m), aracın yol eksenine açısı
+  const RB_END = 12;                                 // kavşak kutusuna en az uzaklık (m)
+  const SPK_LEN = 7, SPK_HW = 0.3, SPK_AHEAD = 4;    // çivi şeridi: boy, yarı kalınlık, araçların önünde (m)
+  const HELI_V = 32, HELI_R = 25, HELI_W = 0.4;      // helikopter: hız (m/s), dönüş yarıçapı (m), açısal hız (rad/s)
+  const HELI_ACC = 18, HELI_TURN = 1.6, HELI_SPIN = 26; // ivme (m/s²), burun dönüşü (rad/s), pervane (rad/s)
+  const SPOT_R = 9, SPOT_LAG = 0.6, SPOT_REACH = 70; // ışıldak: leke yarıçapı, gecikme (s), menzil (m)
+  const HELI_ALT = 22, HELI_SCALE = 1.25;            // görsel irtifa (gölge kayması, m), çizim büyütmesi
+  const H_OFF = 0, H_IN = 1, H_ORBIT = 2, H_OUT = 3; // helikopter durumu: yok, yaklaş, dön, ayrıl
+  const BLIP_MAX = 64;
+
+  // barikat kaydı (iki yuva, yeniden kullanılır)
+  function makeRb() {
+    return {
+      on: false, id: 0, exp: false, t: 0, x: 0, y: 0, ux: 0, uy: 0, tag: null, car0: null, car1: null,
+      spk: false, used: false, skx: 0, sky: 0, skh: 0,
+    };
+  }
+
   // suç tablosu: heat, min (en az ★), ped (yaya tanık olabilir), always (tanıksız da sayılır),
   // vict (kurban polis tanıktır: yanında, ×2), maxS (bu yıldızın üstünde yok sayılır), cap (ısı tavanı),
   // fixed (tanığı polis modülü önceden doğruladı: ×1, ışın yok)
@@ -62,7 +91,8 @@
 
   // polis aracı sürüş modları
   const M_CHASE = 0, M_ROUTE = 1, M_RAM = 2, M_BOX = 3, M_STOP = 4, M_GATE = 5, M_LEAVE = 6, M_OFF = 7, M_SEARCH = 8;
-  const MODE_NAMES = ['chase', 'route', 'ram', 'box', 'stop', 'gate', 'leave', 'disabled', 'search'];
+  const M_RB = 9; // barikat aracı (sürücüsüz park polis aracı; birim değil)
+  const MODE_NAMES = ['chase', 'route', 'ram', 'box', 'stop', 'gate', 'leave', 'disabled', 'search', 'roadblock'];
   // SIKIŞTIR yuvaları (oyuncu çerçevesi: x ileri, y sağ)
   const SLOT_X = [7, -7, 0, 0], SLOT_Y = [0, 0, -3.2, 3.2];
 
@@ -132,7 +162,16 @@
       this._so = { def: null, setup: null, lane: -1, s: 0, mode: 'phys', v: 10, role: 'cop', keep: true, ctrl: null, tag: null, siren: true, driver: true };
       this._pedOpt = { role: PR.COP, pal: 1, st: PS.COP, h: 0, tx: 0, ty: 0, mx: 0, my: 0 };
       this._stPool = [];
-      this.stats = { rays: 0, spawned: 0, promoted: 0, despawned: 0, footSpawned: 0, takedowns: 0, reports: 0 };
+      this.stats = { rays: 0, spawned: 0, promoted: 0, despawned: 0, footSpawned: 0, takedowns: 0, reports: 0, roadblocks: 0, spikes: 0, helis: 0 };
+      // ---- tur 2: tırmanma (barikat, çivi şeridi, helikopter) ----
+      this.heliQ = true;                                  // Q.heli === false ise helikopter yok
+      this.rbs = [makeRb(), makeRb()];
+      this._rbCD = 0; this._rbTry = 0; this._rbSeq = 0;
+      this.heli = { on: false, st: H_OFF, x: 0, y: 0, h: 0, vx: 0, vy: 0, ang: 0, rot: 0, sx: 0, sy: 0, ox: 0, oy: 0, t: 0, light: false, sees: false };
+      this._heliCD = 0; this._rotor = 0;
+      this._ppx = 0; this._ppy = 0; this._pOk = false;   // oyuncunun önceki konumu (çivi şeridi süpürme testi)
+      this._q = { lane: -1, s: 0, x: 0, y: 0, h: 0, k: 0, d: 0, seg: -1, nA: -1, nB: -1, t: 0 };
+      this._rbo = { def: null, setup: null, x: 0, y: 0, h: 0, mode: 'parked', role: 'cop', keep: true, tag: null, siren: true, driver: false };
       // polis sürüş denetleyicisi (bir kez; traffic.spawn/toPhys'e verilir)
       this.copCtrl = (veh, dt, out) => this._copCtrl(veh, dt, out);
       this.setQuality(W ? W.Q : null);
@@ -142,6 +181,7 @@
     setQuality(Q) {
       this.copMax = Math.max(0, Math.min(6, qv(Q, 'copMax', 3)));
       this.footMax = Math.max(0, Math.min(8, qv(Q, 'footCops', 2)));
+      this.heliQ = !(Q && Q.heli === false);
     }
 
     reset() {
@@ -160,6 +200,7 @@
       this._spawnT = 0; this._footSpawnT = 0; this._reckT = 0; this._fNode = -1; this._flowT = 0; this._sirenLvl = 0;
       this._vSee.fill(0); this._vNext.fill(0); this._vMark.fill(0); this._pUid.fill(0); this._pMark.fill(0);
       this.raysFrame = 0; this.maxRays = 0;
+      this._escReset();
     }
 
     // ================= SUÇ VE TANIK MODELİ =================
@@ -253,8 +294,10 @@
       this._validate(W, dt);
       this._reports(dt);
       this._observe(dt, W);
+      this._heli(dt, W);
       this._wanted(dt, W);
       this._units(dt, W);
+      this._roadblocks(dt, W);
       this._flow(dt, W);
       this._assignBox(W);
       for (let i = 0; i < this.cops.length; i++) { const v = this.cops[i]; this._drive(v, v.tag, W, dt); }
@@ -482,6 +525,7 @@
         this.cops[i].siren = false;
       }
       for (let k = 0; k < this.nFoot; k++) this._fBack[k] = 1;
+      this._escLeave();
     }
 
     // ================= YAYA İHBARLARI =================
@@ -618,6 +662,14 @@
           if (slot >= 0 && this._t - this._pChk[slot] < 0.3) ok = this._pSee[slot] === 1;
           else if (this._rays > 0) ok = this._ray(pd.x[i], pd.y[i], x, y);
           if (ok) { const m = d2 <= NEAR2 ? 2 : 1; if (m > best) best = m; if (best === 2) return 2; }
+        }
+      }
+      // helikopter ışıldağı: leke içindeki suç binalardan bağımsız görülür
+      if (best === 0) {
+        const H = this.heli;
+        if (H.on && H.light) {
+          const dx = H.sx - x, dy = H.sy - y;
+          if (dx * dx + dy * dy <= (SPOT_R + 3) * (SPOT_R + 3)) best = 1;
         }
       }
       return best;
@@ -1391,6 +1443,397 @@
       if (bd >= INF) { this._sirenLvl = 0; return; }
       const d = Math.sqrt(bd);
       this._sirenLvl = d <= 12 ? 1 : Math.max(0, 1 - (d - 12) / 138);
+    }
+
+    // ================= TUR 2: TIRMANMA (barikat, çivi şeridi, helikopter) =================
+    rotorLevel() { return this._rotor; }
+
+    // mini harita: helikopter ve etkin barikatlar (k 2); out[n..] doldurulur, yeni n döner (tahsis yalnız ilk kez)
+    extraBlips(out, n) {
+      n = n > 0 ? n | 0 : 0;
+      if (!out) return n;
+      const H = this.heli;
+      if (H.on && H.st !== H_OUT) n = this._blip(out, n, H.x, H.y);
+      for (let i = 0; i < this.rbs.length; i++) {
+        const rb = this.rbs[i];
+        if (rb.on && !rb.exp) n = this._blip(out, n, rb.x, rb.y);
+      }
+      return n;
+    }
+    _blip(out, n, x, y) {
+      if (n >= BLIP_MAX) return n;
+      let o = out[n];
+      if (!o) o = out[n] = { x: 0, y: 0, k: 0 };
+      o.x = x; o.y = y; o.k = 2;
+      return n + 1;
+    }
+    _vis(W, x, y, r) { return typeof W.isVisible === 'function' ? W.isVisible(x, y, r) : false; }
+
+    _escReset() {
+      const tr = this.W ? this.W.traffic : null;
+      for (let i = 0; i < this.rbs.length; i++) this._rbFree(this.rbs[i], tr);
+      const H = this.heli;
+      H.on = false; H.st = H_OFF; H.light = false; H.sees = false; H.vx = 0; H.vy = 0;
+      this._rbCD = 0; this._rbTry = 0; this._heliCD = 0; this._rotor = 0; this._pOk = false;
+    }
+    // aranma bitti (kaçış / clear): barikatlar sona erer (çivi şeridi hemen kalkar), helikopter ayrılır
+    _escLeave() {
+      for (let i = 0; i < this.rbs.length; i++) { const rb = this.rbs[i]; if (rb.on && !rb.exp) this._rbExpire(rb); }
+      if (this.heli.on && this.heli.st !== H_OUT) this._heliLeave(this.W);
+    }
+
+    // ---------- helikopter ----------
+    _heli(dt, W) {
+      const H = this.heli;
+      this._heliCD -= dt;
+      const want = this.stars >= 4 && this.heliQ;
+      if (!H.on) {
+        H.light = false; H.sees = false; this._rotor = 0;
+        if (!want || this._heliCD > 0) return;
+        this._heliSpawn(W);
+        if (!H.on) return;
+      } else if (!want) { if (H.st !== H_OUT) this._heliLeave(W); }
+      else if (H.st === H_OUT) H.st = H_IN;
+      const px = W.px, py = W.py, pvx = W.pvx || 0, pvy = W.pvy || 0, psp = W.pspeed || 0;
+      const dx = H.x - px, dy = H.y - py, d = Math.sqrt(dx * dx + dy * dy);
+      const vmax = Math.max(HELI_V, psp + 8);  // hızlı oyuncuyu da yakalayabilsin
+      let ddx = 0, ddy = 0;
+      if (H.st === H_OUT) {
+        ddx = H.ox * HELI_V; ddy = H.oy * HELI_V;
+        H.t += dt;
+      } else {
+        if (H.st === H_IN && d < HELI_R + 8) { H.st = H_ORBIT; H.ang = Math.atan2(dy, dx); }
+        else if (H.st === H_ORBIT && d > HELI_R + 60) H.st = H_IN;
+        if (H.st === H_ORBIT) {
+          // oyuncu çevresinde dön: yörünge noktasına P denetimi + teğet hız + oyuncunun hızı (yörünge oyuncuyla taşınır)
+          H.ang += HELI_W * dt;
+          if (H.ang > PI) H.ang -= TAU;
+          const ca = Math.cos(H.ang), sa = Math.sin(H.ang), vt = HELI_W * HELI_R;
+          const tx = px + ca * HELI_R, ty = py + sa * HELI_R;
+          ddx = (tx - H.x) * 1.2 - sa * vt + pvx; ddy = (ty - H.y) * 1.2 + ca * vt + pvy;
+        } else {
+          // yaklaş: oyuncuya en yakın yörünge noktasına, varışta yavaşlayarak
+          const k = d > 1e-3 ? HELI_R / d : 0;
+          const ex = px + dx * k - H.x, ey = py + dy * k - H.y, de = Math.sqrt(ex * ex + ey * ey);
+          if (de > 1e-3) {
+            const v = Math.min(vmax, Math.sqrt(2 * 12 * de));
+            ddx = (ex / de) * v + pvx; ddy = (ey / de) * v + pvy;
+          }
+        }
+        const dm = Math.sqrt(ddx * ddx + ddy * ddy);
+        if (dm > vmax) { ddx *= vmax / dm; ddy *= vmax / dm; }
+      }
+      // ivme sınırı (yumuşak hareket)
+      let ax = ddx - H.vx, ay = ddy - H.vy;
+      const am = Math.sqrt(ax * ax + ay * ay), amax = HELI_ACC * dt;
+      if (am > amax) { ax *= amax / am; ay *= amax / am; }
+      H.vx += ax; H.vy += ay;
+      H.x += H.vx * dt; H.y += H.vy * dt;
+      // burun: dönerken oyuncuya, diğer durumlarda gidiş yönüne
+      let hd = H.h;
+      if (H.st === H_ORBIT) hd = Math.atan2(py - H.y, px - H.x);
+      else { const sp = H.vx * H.vx + H.vy * H.vy; if (sp > 4) hd = Math.atan2(H.vy, H.vx); }
+      const dh = wrapA(hd - H.h), mx = HELI_TURN * dt;
+      H.h = wrapA(H.h + (dh > mx ? mx : dh < -mx ? -mx : dh));
+      H.rot += HELI_SPIN * dt;
+      if (H.rot > TAU) H.rot -= TAU * Math.floor(H.rot / TAU);
+      // ışıldak: oyuncuyu birinci derece gecikmeyle izler (sabit hızda tam 0.6 s geriden)
+      const ddH = Math.sqrt((H.x - px) * (H.x - px) + (H.y - py) * (H.y - py));
+      if (H.st !== H_OUT && ddH < SPOT_REACH) {
+        if (!H.light) { H.light = true; H.sx = H.x; H.sy = H.y; }
+        const k = 1 - Math.exp(-dt / SPOT_LAG);
+        H.sx += (px - H.sx) * k; H.sy += (py - H.sy) * k;
+      } else H.light = false;
+      const lx = px - H.sx, ly = py - H.sy;
+      H.sees = H.light && lx * lx + ly * ly <= SPOT_R * SPOT_R;
+      if (H.sees) this.seen = true;   // binalardan bağımsız tanık
+      // pervane sesi: kamera merkezine uzaklık (15 m içinde tam, 200 m'de sıfır)
+      const cx = H.x - W.cx, cy = H.y - W.cy, cd = Math.sqrt(cx * cx + cy * cy);
+      this._rotor = U.clamp(1 - (cd - 15) / 185, 0, 1);
+      // ayrılan helikopter görüş dışına çıkınca silinir
+      if (H.st === H_OUT) {
+        const vr = W.viewR || 45, far = vr + 40;
+        if ((!this._vis(W, H.x, H.y, 16) && cd > far) || H.t > 40) {
+          H.on = false; H.st = H_OFF; H.light = false; H.sees = false; this._rotor = 0; this._heliCD = 3;
+        }
+      }
+    }
+    // görüş dışında doğar (karakol yönünden ya da rastgele), oyuncuya doğru 32 m/s
+    _heliSpawn(W) {
+      const H = this.heli, vr = W.viewR || 45, cx = W.cx, cy = W.cy;
+      const P = this.nav && this.nav.places ? this.nav.places.police : null;
+      let ux = 0, uy = 0;
+      if (P && typeof P.x === 'number') { ux = P.x - cx; uy = P.y - cy; }
+      let m = Math.sqrt(ux * ux + uy * uy);
+      if (m < 1) { const a = Math.random() * TAU; ux = Math.cos(a); uy = Math.sin(a); m = 1; }
+      ux /= m; uy /= m;
+      let R = vr + 50, x = cx + ux * R, y = cy + uy * R;
+      for (let k = 0; k < 4 && this._vis(W, x, y, 16); k++) { R += 40; x = cx + ux * R; y = cy + uy * R; }
+      H.on = true; H.st = H_IN; H.x = x; H.y = y; H.t = 0; H.light = false; H.sees = false;
+      H.h = Math.atan2(W.py - y, W.px - x);
+      H.vx = Math.cos(H.h) * HELI_V; H.vy = Math.sin(H.h) * HELI_V;
+      H.rot = 0; H.ang = 0;
+      this.stats.helis++;
+    }
+    _heliLeave(W) {
+      const H = this.heli;
+      H.st = H_OUT; H.t = 0; H.light = false; H.sees = false;
+      let ox = W ? H.x - W.px : 0, oy = W ? H.y - W.py : 0, m = Math.sqrt(ox * ox + oy * oy);
+      if (m < 1) { ox = Math.cos(H.h); oy = Math.sin(H.h); m = 1; }
+      H.ox = ox / m; H.oy = oy / m;
+    }
+
+    // ---------- barikatlar ve çivi şeritleri ----------
+    _roadblocks(dt, W) {
+      const tr = W.traffic, s = this.stars;
+      if (!tr || !this.nav) { this._pOk = false; return; }
+      let active = 0;
+      for (let i = 0; i < this.rbs.length; i++) {
+        const rb = this.rbs[i];
+        if (!rb.on) continue;
+        rb.t += dt;
+        // araçları doğrula (oyuncu bindi / silindi / havuz yuvası başkasının oldu)
+        if (rb.car0 !== null && !(rb.car0.alive === true && rb.car0.tag === rb.tag)) rb.car0 = null;
+        if (rb.car1 !== null && !(rb.car1.alive === true && rb.car1.tag === rb.tag)) rb.car1 = null;
+        if (rb.car0 === null && rb.car1 === null) { this._rbFree(rb, null); continue; }
+        if (!rb.exp) {
+          const dx = W.px - rb.x, dy = W.py - rb.y;
+          const past = dx * rb.ux + dy * rb.uy > 0 && dx * dx + dy * dy > RB_PAST * RB_PAST;
+          if (s < 3 || rb.t > RB_LIFE || past) this._rbExpire(rb);
+        }
+        if (rb.exp) {
+          // sona erdi: araçlar görünmüyorken silinir (göz önünde kaybolmasın)
+          const c0 = rb.car0, c1 = rb.car1;
+          if (c0 !== null && !c0.vis && !this._vis(W, c0.x, c0.y, 4)) { tr.despawn(c0); rb.car0 = null; }
+          if (c1 !== null && !c1.vis && !this._vis(W, c1.x, c1.y, 4)) { tr.despawn(c1); rb.car1 = null; }
+          if (rb.car0 === null && rb.car1 === null) this._rbFree(rb, null);
+          continue;
+        }
+        active++;
+        // çivi şeridi yalnız ≥4★ (bir kez; görünmüyorken serilir), yıldız düşünce toplanır
+        if (s >= 4) { if (!rb.spk && !rb.used && !this._vis(W, rb.skx, rb.sky, SPK_LEN / 2 + 1)) rb.spk = true; }
+        else rb.spk = false;
+      }
+      this._rbCD -= dt;
+      if (active < RB_WANT[s] && this._rbCD <= 0) {
+        this._rbTry -= dt;
+        if (this._rbTry <= 0) {
+          this._rbTry = 0.5;
+          if (this._rbSpawn(W)) { this._rbCD = RB_CD; this._rbTry = 0; }
+        }
+      }
+      this._spikes(W);
+    }
+    _rbExpire(rb) {
+      rb.exp = true; rb.spk = false;
+      if (rb.car0 !== null && rb.car0.alive && rb.car0.tag === rb.tag) rb.car0.siren = false;
+      if (rb.car1 !== null && rb.car1.alive && rb.car1.tag === rb.tag) rb.car1.siren = false;
+    }
+    _rbFree(rb, tr) {
+      if (tr) {
+        if (rb.car0 !== null && rb.car0.alive && rb.car0.tag === rb.tag) tr.despawn(rb.car0);
+        if (rb.car1 !== null && rb.car1.alive && rb.car1.tag === rb.tag) tr.despawn(rb.car1);
+      }
+      rb.car0 = null; rb.car1 = null; rb.on = false; rb.exp = false; rb.spk = false; rb.used = false; rb.tag = null;
+    }
+    // oyuncu aracının merkezi (önceki -> şimdiki konum) şerit dikdörtgeninden geçti mi; geçtiyse bir kez onSpikes
+    _spikes(W) {
+      if (!W.inCar) { this._pOk = false; return; }
+      const px = W.px, py = W.py;
+      if (this._pOk) {
+        const x0 = this._ppx, y0 = this._ppy, mx = px - x0, my = py - y0;
+        if (mx * mx + my * my < 900) { // ışınlanma değil
+          for (let i = 0; i < this.rbs.length; i++) {
+            const rb = this.rbs[i];
+            if (!rb.on || !rb.spk || !this._spkHit(rb, x0, y0, px, py)) continue;
+            rb.spk = false; rb.used = true; this.stats.spikes++;
+            const wo = W.world;
+            if (wo && typeof wo.onSpikes === 'function') wo.onSpikes(px, py);
+          }
+        }
+      }
+      this._ppx = px; this._ppy = py; this._pOk = true;
+    }
+    _spkHit(rb, x0, y0, x1, y1) {
+      const ux = rb.ux, uy = rb.uy, ox = rb.skx, oy = rb.sky;
+      // a: yol ekseni boyunca (şeridin kalınlığı), b: enine (şeridin boyu)
+      const a0 = (x0 - ox) * ux + (y0 - oy) * uy, a1 = (x1 - ox) * ux + (y1 - oy) * uy;
+      const b0 = (y0 - oy) * ux - (x0 - ox) * uy, b1 = (y1 - oy) * ux - (x1 - ox) * uy;
+      let t0 = 0, t1 = 1;
+      const da = a1 - a0;
+      if (da > -1e-6 && da < 1e-6) { if (a0 < -SPK_HW || a0 > SPK_HW) return false; }
+      else {
+        let ta = (-SPK_HW - a0) / da, tb = (SPK_HW - a0) / da;
+        if (ta > tb) { const q = ta; ta = tb; tb = q; }
+        if (ta > t0) t0 = ta;
+        if (tb < t1) t1 = tb;
+        if (t0 > t1) return false;
+      }
+      const bA = b0 + (b1 - b0) * t0, bB = b0 + (b1 - b0) * t1, hl = SPK_LEN / 2;
+      return (bA < bB ? bA : bB) <= hl && (bA > bB ? bA : bB) >= -hl;
+    }
+    // Barikat yeri: oyuncunun şeridinden yol grafiğini izleyerek (kavşakta düz, yoksa hareket yönüne en yakın
+    // dönüş) 90–150 m ileride; bulunamazsa hareket yönündeki (±29°) noktalar en yakın yol eksenine oturtulur.
+    _rbSpawn(W) {
+      const nav = this.nav, o = this._q, sp = W.pspeed || 0;
+      let fx = Math.cos(W.ph || 0), fy = Math.sin(W.ph || 0);
+      if (sp > 3) { fx = (W.pvx || 0) / sp; fy = (W.pvy || 0) / sp; }
+      const hd = Math.atan2(fy, fx);
+      if (nav.nearestLane(W.px, W.py, hd, 16, 1.25, o)) {
+        let lane = o.lane, s = o.s, arc = 0, di = 0;
+        for (let guard = 0; guard < 16 && di < RB_DS.length; guard++) {
+          const L = nav.lanes[lane], rem = L.len - s;
+          while (di < RB_DS.length && arc + rem >= RB_DS[di]) {
+            if (!L.conn && this._rbAtLane(W, L, s + RB_DS[di] - arc)) return true;
+            di++;
+          }
+          arc += rem; s = 0;
+          const nx = this._rbNext(L, fx, fy);
+          if (nx < 0) break;
+          lane = nx;
+        }
+      }
+      const q = this._q;
+      for (let k = 0; k < 9; k++) {
+        const d = RB_D0 + (k % 3) * 25, a = hd + (((k / 3) | 0) - 1) * 0.5;
+        if (!nav.snap(W.px + Math.cos(a) * d, W.py + Math.sin(a) * d, q)) continue;
+        const sg = nav.segs[q.seg];
+        const ex = q.x - W.px, ey = q.y - W.py, de = Math.sqrt(ex * ex + ey * ey);
+        if (de < RB_D0 * 0.9 || de > RB_D1 * 1.1 || ex * fx + ey * fy < 0.5 * de) continue;
+        const dir = (sg.v ? fy : fx) >= 0 ? 1 : -1;
+        if (this._rbAt(W, sg, sg.v ? q.y : q.x, dir)) return true;
+      }
+      return false;
+    }
+    // sonraki şerit: bağlayıcıdan hedef şerit; yol şeridinden düz bağlayıcı, yoksa yöne en yakın dönüş
+    _rbNext(L, fx, fy) {
+      const nx = L.next;
+      if (!nx || nx.length === 0) return -1;
+      if (L.conn) return nx[0];
+      const lanes = this.nav.lanes;
+      let best = -1, bd = -INF;
+      for (let k = 0; k < nx.length; k++) {
+        const C = lanes[nx[k]];
+        if (C.turn === 'U') continue;
+        if (C.turn === 'S') return nx[k];
+        const dt = Math.cos(C.h1) * fx + Math.sin(C.h1) * fy;
+        if (dt > bd) { bd = dt; best = nx[k]; }
+      }
+      return best;
+    }
+    _rbAtLane(W, L, sAt) {
+      const sg = this.nav.segs[L.seg], q = this._o2;
+      this.nav.laneAt(L.id, sAt, q);
+      return this._rbAt(W, sg, sg.v ? q.y : q.x, L.dir);
+    }
+    // parça sg üzerinde eksen konumu `along`'da, dir (±1: oyuncunun eksen boyunca geliş yönü) için barikat kur
+    _rbAt(W, sg, along, dir) {
+      if (along - sg.a < RB_END || sg.b - along < RB_END) return false;
+      const ux = sg.v ? 0 : dir, uy = sg.v ? dir : 0;      // oyuncunun gidiş yönü
+      const lx = -uy, ly = ux;                              // enine
+      const cx = sg.v ? sg.c : along, cy = sg.v ? along : sg.c;
+      const c = this.city;
+      if (c && c.drift && c.inDrift(cx, cy, 8)) return false;
+      if (this._vis(W, cx, cy, 10)) return false;
+      const ddx = cx - W.px, ddy = cy - W.py;
+      if (ddx * ddx + ddy * ddy < 60 * 60) return false;
+      const tr = W.traffic, list = tr.list;
+      for (let k = 0; k < list.length; k++) {
+        const r = list[k], ex = r.x - cx, ey = r.y - cy;
+        if (ex * ex + ey * ey < 144) return false;          // 12 m içinde araç: boş yol değil
+      }
+      const def = DS.vehById ? DS.vehById('polis') : null;
+      if (!def || !DS.variantSetup) return false;
+      const sa = Math.sin(RB_ANG), ca = Math.cos(RB_ANG);
+      const ext = 0.5 * (def.len * sa + def.wid * ca), off = RB_GAP / 2 + ext;
+      const x0 = cx + lx * off, y0 = cy + ly * off, x1 = cx - lx * off, y1 = cy - ly * off;
+      if (!this._freePt(cx, cy, 1.2) || !this._freePt(x0, y0, 1.3) || !this._freePt(x1, y1, 1.3)) return false;
+      const rb = this.rbs[0].on ? (this.rbs[1].on ? null : this.rbs[1]) : this.rbs[0];
+      if (rb === null) return false;
+      // V biçimi: burunlar boşluğa ve gelen oyuncuya dönük
+      const h0 = Math.atan2(-ly * sa - uy * ca, -lx * sa - ux * ca);
+      const h1 = Math.atan2(ly * sa - uy * ca, lx * sa - ux * ca);
+      const tag = { police: true, roadblock: ++this._rbSeq, disabled: false, mode: M_RB };
+      const o = this._rbo;
+      o.def = def; o.setup = DS.variantSetup(6); o.tag = tag; o.siren = true; o.keep = true; o.driver = false;
+      o.role = 'cop'; o.mode = 'parked';
+      o.x = x0; o.y = y0; o.h = h0;
+      const v0 = tr.spawn(o);
+      o.x = x1; o.y = y1; o.h = h1;
+      const v1 = v0 !== null ? tr.spawn(o) : null;
+      o.def = null; o.setup = null; o.tag = null;
+      if (v0 === null || v1 === null) { if (v0 !== null) tr.despawn(v0); return false; }
+      rb.on = true; rb.id = tag.roadblock; rb.exp = false; rb.t = 0; rb.tag = tag; rb.car0 = v0; rb.car1 = v1;
+      rb.x = cx; rb.y = cy; rb.ux = ux; rb.uy = uy;
+      rb.spk = false; rb.used = false;
+      const ae = 0.5 * (def.len * ca + def.wid * sa) + SPK_AHEAD;
+      rb.skx = cx - ux * ae; rb.sky = cy - uy * ae; rb.skh = Math.atan2(ly, lx);
+      this.stats.roadblocks++;
+      return true;
+    }
+
+    // ================= ÇİZİM (dünya çağırır; her biri ctx'i W.M'de, alfa 1 bırakır) =================
+    // zemin: çivi şeritleri (+ gündüz soluk ışıldak lekesi)
+    drawGround(ctx, W) {
+      W = W || this.W;
+      const AS = DS.ActorSprites, M = W ? W.M : null;
+      if (!AS || !M) return;
+      for (let i = 0; i < this.rbs.length; i++) {
+        const rb = this.rbs[i];
+        if (rb.on && rb.spk && AS.drawSpikes && this._vis(W, rb.skx, rb.sky, SPK_LEN / 2 + 0.5)) AS.drawSpikes(ctx, rb.skx, rb.sky, rb.skh, SPK_LEN);
+      }
+      const H = this.heli, env = W.env;
+      if (H.on && H.light && AS.drawSearchlight && !(env && env.light) && this._vis(W, H.sx, H.sy, SPOT_R)) {
+        ctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
+        AS.drawSearchlight(ctx, H.sx, H.sy, SPOT_R, W.t, 0.2);
+      }
+      ctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
+      ctx.globalAlpha = 1;
+    }
+    // binaların üstü: helikopter (yer gölgesi güneş × irtifa kadar kayık; gece gölge yok), gövde, pervane
+    drawAbove(ctx, W) {
+      W = W || this.W;
+      const AS = DS.ActorSprites, M = W ? W.M : null, H = this.heli;
+      if (!AS || !M || !H.on || !AS.drawHeli) return;
+      let shX = NaN, shY = NaN;
+      const sun = W.env ? W.env.sun : null;
+      if (sun && typeof sun.x === 'number' && typeof sun.y === 'number') {
+        shX = sun.x * HELI_ALT; shY = sun.y * HELI_ALT;
+        const m = Math.sqrt(shX * shX + shY * shY);
+        if (m > 12) { shX *= 12 / m; shY *= 12 / m; }
+      }
+      AS.drawHeli(ctx, H.x, H.y, H.h, H.rot, HELI_SCALE, shX, shY);
+      ctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
+      ctx.globalAlpha = 1;
+    }
+    // ışık haritası (gece; lctx M·lightScale'de, göreli çizim): ışıldak lekesi, soluk huzme, kuyruk lambası
+    drawLights(lctx, W) {
+      W = W || this.W;
+      const H = this.heli, AS = DS.ActorSprites, S = DS.Sprites;
+      if (!W || !H.on) return;
+      const heliVis = this._vis(W, H.x, H.y, 8);
+      if (H.light) {
+        const spotVis = this._vis(W, H.sx, H.sy, SPOT_R + 2);
+        if (spotVis && AS && AS.drawSearchlight) AS.drawSearchlight(lctx, H.sx, H.sy, SPOT_R, W.t);
+        const dx = H.sx - H.x, dy = H.sy - H.y, d = Math.sqrt(dx * dx + dy * dy);
+        if (S && S.cone && d > 2 && (spotVis || heliVis)) {
+          lctx.save();
+          lctx.translate(H.x, H.y);
+          lctx.rotate(Math.atan2(dy, dx));
+          lctx.globalAlpha = 0.3;
+          lctx.drawImage(S.cone, 0, -SPOT_R, d + SPOT_R * 0.6, 2 * SPOT_R);
+          lctx.globalAlpha = 1;
+          lctx.restore();
+        }
+      }
+      // kuyruk ucunda 1 Hz yanıp sönen kırmızı lamba
+      const tt = W.t || 0;
+      if (S && S.red && heliVis && tt - Math.floor(tt) < 0.15) {
+        const k = 4.9 * HELI_SCALE, tx = H.x - Math.cos(H.h) * k, ty = H.y - Math.sin(H.h) * k;
+        lctx.globalAlpha = 0.9;
+        lctx.drawImage(S.red, tx - 1.2, ty - 1.2, 2.4, 2.4);
+        lctx.globalAlpha = 1;
+      }
     }
 
     // ================= SÜRÜŞ DENETLEYİCİSİ (120 Hz, traffic.stepPhys) =================

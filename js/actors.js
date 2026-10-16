@@ -181,6 +181,85 @@
     }
   }
 
+  // ---------------- polis tırmanması: helikopter, çivi şeridi, ışıldak (yapım anında, metre; +x burun) ----------------
+  // Gövde ve şerit tabanı HPX piksel/m'de pişirilir; yazılım yolunda araçlar gibi tembel, bütçeli, önceden
+  // döndürülmüş kareler (tamsayı blit). Pervane diski simetrik: ekran hizalı 2 kare (45° kaydırılmış paller)
+  // dönüşümlü çizilir (GPU yolunda sürekli döner). Girişler vmap'te tür 0 olarak tutulur (LRU/temizlik ortak).
+  const HELI_N = 32, SPK_N = 32, ROT_N = 8;   // önceden döndürülmüş açı sayısı (pervane: yalnız 0° ve 45°)
+  const HPX = 26, RPX = 12;                   // taban çözünürlüğü (piksel/m): gövde/şerit, pervane diski
+  const HELI_HL = 5.3, HELI_HW = 1.5;         // gövde tuvalinin yarı boyu / yarı eni (m; pervane direği merkezde)
+  const ROTOR_R = 5.0;                        // pervane yarıçapı (m)
+  const KEY_HB = 'heli|b', KEY_HR = 'heli|r';
+  const HELI_BLUE = '#1f4fa8', HELI_WHITE = '#f4f6f8', HELI_GLASS = '#1c2836', HELI_GREY = '#c9ced6';
+  const HELI_SKID = '#2a2d33', HELI_SH = '#0c1022', ROTOR_COL = '#20242c';
+  const SPK_BAND = '#2b2e33', SPK_TOOTH = '#d4dbe3', SPK_CAP = '#ffcc00';
+
+  // gövde (pervanesiz): kızaklar, kuyruk kirişi, mavi yanlı beyaz sırtlı gövde, ön cam, tavan çakarı
+  function paintHeli(g) {
+    g.fillStyle = HELI_SKID;
+    g.fillRect(-1.7, -1.32, 3.6, 0.14); g.fillRect(-1.7, 1.18, 3.6, 0.14);
+    g.fillRect(-0.95, -1.3, 0.12, 2.6); g.fillRect(1.05, -1.3, 0.12, 2.6);
+    g.fillStyle = HELI_BLUE;
+    g.fillRect(-4.9, -0.2, 3.9, 0.4);          // kuyruk kirişi
+    g.fillRect(-4.5, -0.85, 0.45, 1.7);        // yatay dengeleyici
+    g.lineWidth = 0.07; g.strokeStyle = INK;
+    g.strokeRect(-4.9, -0.2, 3.9, 0.4); g.strokeRect(-4.5, -0.85, 0.45, 1.7);
+    g.fillStyle = INK; g.fillRect(-5.1, -0.08, 0.62, 0.16);   // dikey kuyruk kanadı
+    // kuyruk pervanesi: yarı saydam bulanık disk
+    g.globalAlpha = 0.4; g.fillStyle = '#3a3f48';
+    g.beginPath(); g.arc(-4.85, 0.34, 0.5, 0, TAU); g.fill();
+    g.globalAlpha = 1;
+    g.lineWidth = 0.09;
+    g.fillStyle = HELI_BLUE;
+    g.beginPath(); g.ellipse(0.25, 0, 2.3, 1.08, 0, 0, TAU); g.fill(); g.stroke();
+    g.fillStyle = HELI_WHITE;
+    g.beginPath(); g.ellipse(0.05, 0, 1.85, 0.6, 0, 0, TAU); g.fill();
+    // ön cam (D biçimi) + parlama
+    g.fillStyle = HELI_GLASS;
+    g.beginPath(); g.ellipse(1.45, 0, 1.05, 0.86, 0, -Math.PI / 2, Math.PI / 2); g.closePath(); g.fill();
+    g.fillStyle = '#ffffff'; g.globalAlpha = 0.35;
+    g.beginPath(); g.ellipse(1.95, -0.34, 0.3, 0.12, -0.5, 0, TAU); g.fill();
+    g.globalAlpha = 1;
+    // motor kaportası ve tavan çakarı (kırmızı / mavi)
+    g.fillStyle = HELI_GREY; g.fillRect(-1.05, -0.4, 1.5, 0.8);
+    g.fillStyle = RED_BAR; g.fillRect(0.62, -0.46, 0.22, 0.34);
+    g.fillStyle = BLUE_BAR; g.fillRect(0.62, 0.12, 0.22, 0.34);
+  }
+  // pervane diski: soluk bulanık disk + kenar halkası + 4 pal (arkalarında soluk iz kaması) + göbek
+  function paintRotor(g, R) {
+    g.fillStyle = ROTOR_COL; g.globalAlpha = 0.13;
+    g.beginPath(); g.arc(0, 0, R, 0, TAU); g.fill();
+    g.globalAlpha = 0.28; g.lineWidth = 0.12; g.strokeStyle = ROTOR_COL;
+    g.beginPath(); g.arc(0, 0, R - 0.08, 0, TAU); g.stroke();
+    for (let k = 0; k < 4; k++) {
+      const a = (k * Math.PI) / 2, ca = Math.cos(a), sa = Math.sin(a);
+      g.globalAlpha = 0.12; g.fillStyle = ROTOR_COL;
+      g.beginPath(); g.moveTo(0, 0); g.arc(0, 0, R - 0.1, a - 0.45, a); g.closePath(); g.fill();
+      g.globalAlpha = 0.62; g.fillStyle = INK;
+      g.beginPath();
+      g.moveTo(0.2 * ca + 0.13 * sa, 0.2 * sa - 0.13 * ca); g.lineTo((R - 0.1) * ca + 0.13 * sa, (R - 0.1) * sa - 0.13 * ca);
+      g.lineTo((R - 0.1) * ca - 0.13 * sa, (R - 0.1) * sa + 0.13 * ca); g.lineTo(0.2 * ca - 0.13 * sa, 0.2 * sa + 0.13 * ca);
+      g.closePath(); g.fill();
+    }
+    g.globalAlpha = 1; g.fillStyle = '#2b2f37';
+    g.beginPath(); g.arc(0, 0, 0.38, 0, TAU); g.fill();
+  }
+  // çivi şeridi: sarı/siyah uyarı bantlı şerit, iki yana bakan gümüş dişler (+x şeridin uzun ekseni; görsel en 0.8 m)
+  function paintSpikes(g, len) {
+    const hl = len / 2;
+    g.fillStyle = SPK_TOOTH;
+    g.beginPath();
+    for (let x = -hl + 0.3; x < hl - 0.2; x += 0.42) {
+      g.moveTo(x - 0.12, -0.2); g.lineTo(x, -0.4); g.lineTo(x + 0.12, -0.2);
+      g.moveTo(x + 0.09, 0.2); g.lineTo(x + 0.21, 0.4); g.lineTo(x + 0.33, 0.2);
+    }
+    g.fill();
+    g.fillStyle = SPK_BAND; g.fillRect(-hl, -0.23, len, 0.46);
+    g.fillStyle = SPK_CAP;
+    for (let x = -hl; x < hl - 1e-3; x += 1) g.fillRect(x, -0.23, Math.min(0.5, hl - x), 0.46);
+    g.lineWidth = 0.06; g.strokeStyle = INK; g.strokeRect(-hl, -0.23, len, 0.46);
+  }
+
   // ---------------- tekil ----------------
   const AS = {
     POSE,
@@ -764,6 +843,166 @@
       ctx.setTransform(m0, m1, m2, m3, this.m4, this.m5);
     },
 
+    // ================= POLİS TIRMANMASI (helikopter, çivi şeridi, ışıldak) =================
+    // Polis helikopteri: (x, y) pervane direği, h gövde yönü, rotorAng pervane açısı, scale irtifa büyütmesi.
+    // shX, shY (isteğe bağlı, m): yer gölgesinin kayması (güneş × irtifa); verilirse önce gölge çizilir
+    // (yer ölçeğinde, tek dolgu). Gövde 1 + pervane 1 drawImage. Tabanlar ekran dışındayken de hazırlanır
+    // (helikopter görüş dışında doğar). Çağıran sonra ctx.setTransform(M…) ile dönüşümü geri kurar.
+    drawHeli(ctx, x, y, h, rotorAng, scale, shX, shY) {
+      if (!this._ready) this.init();
+      const sc = scale > 0 ? scale : 1;
+      const m0 = this.m0, m1 = this.m1, m2 = this.m2, m3 = this.m3, m4 = this.m4, m5 = this.m5;
+      const eb = this.vmap.get(KEY_HB) || this._xEntry(KEY_HB, 2 * HELI_HL, 2 * HELI_HW, HPX, HELI_N, paintHeli, 0);
+      const er = this.vmap.get(KEY_HR) || this._xEntry(KEY_HR, 2 * ROTOR_R + 0.2, 2 * ROTOR_R + 0.2, RPX, ROT_N, paintRotor, ROTOR_R);
+      if (typeof shX === 'number' && typeof shY === 'number' && shX === shX && shY === shY) {
+        const qx = x + shX, qy = y + shY;
+        const gx = m0 * qx + m2 * qy + m4, gy = m1 * qx + m3 * qy + m5;
+        const rg = (ROTOR_R + 0.5) * this.zEff;
+        if (gx > -rg && gy > -rg && gx < this.cw + rg && gy < this.ch + rg) {
+          const co = Math.cos(h), si = Math.sin(h);
+          ctx.setTransform(m0 * co + m2 * si, m1 * co + m3 * si, m2 * co - m0 * si, m3 * co - m1 * si, gx, gy);
+          ctx.fillStyle = HELI_SH;
+          ctx.globalAlpha = 0.07;
+          ctx.beginPath(); ctx.arc(0, 0, ROTOR_R, 0, TAU); ctx.fill();
+          ctx.globalAlpha = 0.3;
+          ctx.beginPath();
+          ctx.moveTo(2.55, 0); ctx.ellipse(0.25, 0, 2.3, 1.08, 0, 0, TAU);
+          ctx.rect(-4.9, -0.2, 3.9, 0.4); ctx.rect(-4.5, -0.85, 0.45, 1.7);
+          ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+      }
+      const sx = m0 * x + m2 * y + m4, sy = m1 * x + m3 * y + m5;
+      const rr = (ROTOR_R + 0.3) * sc * this.zEff;
+      if (sx < -rr || sy < -rr || sx > this.cw + rr || sy > this.ch + rr) return;
+      if (eb !== null) this._xDraw(ctx, eb, h, sx, sy, sc, -1);
+      else {
+        // taban henüz yok (bütçe): tek kare için düz gövde
+        this._xf(ctx, h, sx, sy);
+        ctx.fillStyle = HELI_BLUE; ctx.fillRect(-2 * sc, -1 * sc, 4.5 * sc, 2 * sc);
+      }
+      if (er === null) return;
+      const ra = typeof rotorAng === 'number' && rotorAng === rotorAng ? rotorAng : 0;
+      if (this.prerot) this._xDraw(ctx, er, 0, sx, sy, sc, Math.floor(ra / (Math.PI / 4)) & 1);
+      else this._xDraw(ctx, er, ra, sx, sy, sc, -1);
+    },
+
+    // Çivi şeridi (zemin): (x, y) merkez, h uzun eksen yönü, len uzunluk (m; dişlerle 0.8 m en). 1 drawImage.
+    drawSpikes(ctx, x, y, h, len) {
+      if (!this._ready) this.init();
+      const L = len > 0 ? Math.round(len * 2) / 2 : 7;
+      const sx = this.m0 * x + this.m2 * y + this.m4, sy = this.m1 * x + this.m3 * y + this.m5;
+      const rr = (L / 2 + 0.4) * this.zEff;
+      if (sx < -rr || sy < -rr || sx > this.cw + rr || sy > this.ch + rr) return;
+      if (L !== this._spkL) { this._spkL = L; this._spkK = 'spk|' + L; } // anahtar kare başına üretilmez
+      const e = this.vmap.get(this._spkK) || this._xEntry(this._spkK, L + 0.4, 1.0, HPX, SPK_N, paintSpikes, L);
+      if (e === null) return;
+      this._xDraw(ctx, e, h, sx, sy, 1, -1);
+    },
+
+    // Işıldak lekesi: (x, y) merkez, r yarıçap (m), t zaman (hafif titreşim), a isteğe bağlı alfa çarpanı.
+    // Işık haritasında (göreli dönüşüm: M·lightScale korunur) ya da gündüz zeminde (ctx M'de, düşük a) çizilir.
+    drawSearchlight(lctx, x, y, r, t, a) {
+      if (!this._ready) this.init();
+      let c = this._spot;
+      if (!c) {
+        const S = 64;
+        c = this._spot = U.canvas(S, S);
+        const g = c.getContext('2d');
+        const gr = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+        gr.addColorStop(0, 'rgba(255,248,226,1)');
+        gr.addColorStop(0.55, 'rgba(255,245,215,0.88)');
+        gr.addColorStop(0.8, 'rgba(255,240,205,0.38)');
+        gr.addColorStop(1, 'rgba(255,236,200,0)');
+        g.fillStyle = gr; g.fillRect(0, 0, S, S);
+      }
+      const tt = typeof t === 'number' ? t : 0, rad = r > 0 ? r : 9;
+      const k = rad * (1 + 0.035 * Math.sin(tt * 2.3));
+      lctx.globalAlpha = (a > 0 ? Math.min(1, a) : 1) * (0.9 + 0.08 * Math.sin(tt * 13.7));
+      lctx.drawImage(c, x - k, y - k, 2 * k, 2 * k);
+      lctx.globalAlpha = 1;
+    },
+
+    // ek sprite girişi (vmap'te tür 0: _evict/_dropRot/clear araçlarla ortak); taban bir kez, bütçeyle pişer
+    _xEntry(key, w, h, px, N, paint, arg) {
+      if (!this._ready) this.init();
+      if (!this._can(B_VEH)) return null;
+      const t0 = now();
+      const pw = Math.ceil(w * px), ph = Math.ceil(h * px);
+      const c = U.canvas(pw, ph), g = c.getContext('2d');
+      g.setTransform(px, 0, 0, px, pw / 2, ph / 2);
+      paint(g, arg);
+      g.globalAlpha = 1;
+      this._touch(c);
+      const e = {
+        key, kind: 0, def: null, c, w: pw / px, h: ph / px, px, N, ready: true,
+        bytes: pw * ph * 4, used: this.fno, rs: null, ro: null, roF: 0,
+      };
+      this.vmap.set(key, e);
+      this.bytes += e.bytes;
+      this._spent(t0, B_VEH);
+      if (this.bytes > this.maxBytes) this._evict();
+      return e;
+    },
+    // yeni kova (ölçek zw = zb·scale): mevcut kareler eski küme olur (araçlardaki _rotSet gibi)
+    _xRot(e, zw) {
+      if (e.ro !== null) { this._freeRot(e.ro); e.ro = null; }
+      if (e.rs !== null && e.rs.n > 0) { e.ro = e.rs; e.roF = this.fno; }
+      e.rs = { zb: zw, f: new Array(e.N).fill(null), bytes: 0, n: 0 };
+      return e.rs;
+    },
+    _xFrame(e, rs, k) {
+      const t0 = now();
+      const zb = rs.zb, a = (k * TAU) / e.N;
+      const ca = Math.cos(a), sa = Math.sin(a), aca = Math.abs(ca), asa = Math.abs(sa);
+      const fw = Math.ceil((aca * e.w + asa * e.h) * zb) + 2;
+      const fh = Math.ceil((asa * e.w + aca * e.h) * zb) + 2;
+      const c = U.canvas(fw, fh), g = c.getContext('2d');
+      g.imageSmoothingQuality = 'high';
+      const s = zb / e.px;
+      g.setTransform(ca * s, sa * s, -sa * s, ca * s, fw / 2, fh / 2);
+      g.drawImage(e.c, -e.c.width / 2, -e.c.height / 2);
+      this._touch(c);
+      rs.f[k] = c;
+      const b = fw * fh * 4;
+      rs.bytes += b; rs.n++; this.bytes += b; this.nFrames++;
+      this._spent(t0, B_CARF);
+      if (this.bytes > this.maxBytes) this._evict();
+      return c;
+    },
+    // tek çizim: yazılım yolunda önceden döndürülmüş kare (tamsayı blit), yoksa bileşik dönüşüm (GPU yolu).
+    // screenK ≥ 0: ekran açısı sabit kare (pervane); aksi hâlde dünya yönü h
+    _xDraw(ctx, e, h, sx, sy, sc, screenK) {
+      e.used = this.fno;
+      if (this.prerot) {
+        const N = e.N;
+        let k = screenK;
+        if (k < 0) { k = Math.round(((h + this.rot) * N) / TAU) % N; if (k < 0) k += N; }
+        const zw = this.zb * sc;
+        const rs = e.rs !== null && e.rs.zb === zw ? e.rs : this._xRot(e, zw);
+        let fr = rs.f[k], zs = this.zs;
+        if (fr === null && this._can(B_CARF)) fr = this._xFrame(e, rs, k);
+        if (e.ro !== null) {
+          if (this.fno - e.roF > OLD_KEEP) { this._freeRot(e.ro); e.ro = null; }
+          else if (fr === null && e.ro.f[k] !== null) { fr = e.ro.f[k]; zs = this._snap((this.zEff * sc) / e.ro.zb); }
+        }
+        if (fr !== null) {
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          if (zs === 1) ctx.drawImage(fr, (sx - fr.width / 2 + 0.5) | 0, (sy - fr.height / 2 + 0.5) | 0);
+          else {
+            const dw = (fr.width * zs + 0.5) | 0, dh = (fr.height * zs + 0.5) | 0;
+            ctx.drawImage(fr, (sx - dw / 2 + 0.5) | 0, (sy - dh / 2 + 0.5) | 0, dw, dh);
+          }
+          return;
+        }
+      }
+      const ang = screenK >= 0 ? (screenK * TAU) / e.N - this.rot : h;
+      const co = Math.cos(ang) * sc, si = Math.sin(ang) * sc;
+      const m0 = this.m0, m1 = this.m1, m2 = this.m2, m3 = this.m3;
+      ctx.setTransform(m0 * co + m2 * si, m1 * co + m3 * si, m2 * co - m0 * si, m3 * co - m1 * si, sx, sy);
+      ctx.drawImage(e.c, -e.w / 2, -e.h / 2, e.w, e.h);
+    },
+
     // ================= ÖNBELLEK =================
     // Yapıma izin: bütçe kaldıysa ve (karede ilk yapımsa ya da tahminin BUILD_K katı kalan bütçeye sığıyorsa).
     // Pay tahminle orantılı: yavaş makinede (tek yapım ~1 ms) karede genellikle tek yapım, hızlıda birkaç tane;
@@ -848,7 +1087,7 @@
       this.vmap.clear();
       this._dropPeds();
       this.bytes = 0; this.nFrames = 0;
-      this._gR = null; this._gB = null; this._tc = null; this._tcN = 0;
+      this._gR = null; this._gB = null; this._tc = null; this._tcN = 0; this._spot = null;
       this.zb = 0; this.zPrev = 0; this.zStable = 0;
     },
 

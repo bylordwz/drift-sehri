@@ -1076,7 +1076,8 @@
       if (m && m.phoneList) { try { data = m.phoneList(idx); } catch (e) { this._err('missions.phoneList', e); } }
       if (!data) data = { phone: idx, crew: { id: '', name: 'ANKESÖRLÜ TELEFON', col: '#38d9ff', respect: 0 }, items: [] };
       if (this.ow) this.ow.tut.phone = true;
-      this._au('beep', 660);
+      const au = this.game.audio;
+      if (au && au.beep) { try { au.beep(660, 0.06, 0.05); } catch (e) { this._err('audio.beep', e); } }
       if (DS.WorldUI && DS.WorldUI.openPhone) this._ui('openPhone', data);
     }
     _openGarage() {
@@ -1131,10 +1132,11 @@
       return a.id || (a.def && a.def.id) || null;
     }
     _craneTarget() {
-      const id = this._missionId(), pv = this.playerVeh;
-      if (!id || !pv) return false;
-      const m = this.missions;
+      const m = this.missions, pv = this.playerVeh;
+      if (!m || !pv) return false;
       if (typeof m.craneTarget === 'function') { try { return !!m.craneTarget(pv); } catch (e) { this._err('missions.craneTarget', e); return false; } }
+      const id = this._missionId();
+      if (!id) return false;
       const a = this.missions.active, type = a.def && a.def.type ? a.def.type : a.type;
       if (type && type !== 'steal') return false;
       if (pv.tag && pv.tag.mission === id) return true;
@@ -1268,7 +1270,7 @@
       this._explode(r.x, r.y, r.setup && r.setup.color, r, byP);
     }
     // çizgi film patlaması: alev, kara duman, enkaz parçaları; yakındaki yayalar devrilir, araçlar hasar alır
-    _explode(x, y, col, src, byPlayer) {
+    _explode(x, y, col, src, byPlayer, isPlayer) {
       const g = this.game, fx = g.fx, W = this.W;
       if (fx.explode) fx.explode(x, y, col || '#8a8f98');
       const dp = Math.hypot(x - W.px, y - W.py);
@@ -1303,7 +1305,7 @@
         try { d = this.walker.blast(x, y); } catch (e) { this._err('walker.blast', e); }
         if (d > 0 && fx.knock) fx.knock(this.walker.x, this.walker.y, PANTS_PLAYER);
       }
-      this._mev('explode', src);
+      this._mev('explode', isPlayer ? null : src);
     }
     // oyuncu içindeyken patlama: enkaz kalır, oyuncu bayılır
     _explodePlayer() {
@@ -1316,7 +1318,7 @@
       const wk = this.walker;
       wk.reset(pt ? pt.x : x, pt ? pt.y : y, car.h);
       this._toFoot();
-      this._explode(x, y, col, veh, false);
+      this._explode(x, y, col, veh, false, true);
       wk.hp = 0;
       this._beginWasted();
     }
@@ -1480,11 +1482,10 @@
     }
     onMissionEnd(r) {
       if (this.state === 'off' || !r) return;
-      // istatistikleri (missions/taxi) görev modülü tutar; geçişte aranma temizlenir
-      if (r.pass && this.police && this.police.stars > 0) { try { this.police.clear('mission'); } catch (e) { this._err('police.clear', e); } }
+      // ödül, aranma temizliği ve görev istatistikleri görev modülündedir: burada yalnız sonuç + kayıt
       this._au('jingle', r.pass ? 'pass' : 'fail');
       this.autosave(true);
-      if (DS.WorldUI && DS.WorldUI.showResult) this._ui('showResult', r);
+      if (r.kind !== 'taxi' && DS.WorldUI && DS.WorldUI.showResult) this._ui('showResult', r);
       else this.msg(r.pass ? 'GÖREV TAMAM!' : 'GÖREV BAŞARISIZ', 'big', r.note || '');
     }
     msg(text, kind, sub) {
@@ -1790,9 +1791,9 @@
     closePhone() { this._ui('closePhone'); }
     retryMission() {
       const m = this.missions;
+      this.closeResult();
       let ok = false;
       if (m && m.retry) { try { ok = !!m.retry(); } catch (e) { this._err('missions.retry', e); } }
-      this.closeResult();
       return ok;
     }
     closeResult() { this._ui('closeResult'); }
@@ -2145,7 +2146,7 @@
           }
           return false;
         },
-        failMission() { const m = w.missions; if (m && m.abort) m.abort('debug'); },
+        failMission() { const m = w.missions; if (m && m.abort) m.abort('abort'); },
         freeze(on) { w._frozen = !!on; },
       };
     }
