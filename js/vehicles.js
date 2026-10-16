@@ -79,6 +79,17 @@
       color: '#ff6a13', num: '', exhaust: 0.5, dual: true,
       shape: { nose: 0.2, tail: 0.16, taperF: 0.9, taperR: 0.95, hood: 0.38, wind: 0.13, roof: 0.17, rear: 0.16, cabin: 0.74, popups: false, scoop: true },
     },
+    // Tur 2: hastane ambulansı (panelvan gövdeli). İçine binince "AMBULANS İŞİ" yan işi başlatılabilir.
+    // shape.barF: çakar çubuğunun tavan boyunca konumu (0 = tavanın önü, 1 = arkası; yoksa 0.5 = orta)
+    {
+      id: 'ambulans', name: 'AMBULANS', price: null, cls: 'ambulance', value: 3500, maxHp: 1200, siren: true,
+      desc: 'Hastane ambulansı. Hantal ama sağlam; içine binersen hasta taşıyıp para kazanabilirsin.',
+      len: 5.4, wid: 2.06, mass: 2400, wb: 3.35, fw: 0.55, cgH: 0.85,
+      torque: 360, idle: 750, redline: 5000, gears: [3.8, 2.2, 1.45, 1.0], final: 4.1,
+      turbo: 0.15, voice: 'i6', mu: 0.93, steer: 36, pos: 0.08, brake: 15500,
+      color: '#f4f6f8', num: '', exhaust: -0.62,
+      shape: { nose: 0.07, tail: 0.04, taperF: 0.96, taperR: 0.99, hood: 0.13, wind: 0.09, roof: 0.72, rear: 0.03, cabin: 0.95, popups: false, hatch: true, barF: 0.1 },
+    },
   ];
 
   // Önce kadro, sonra drift araçları; bulunamazsa sedan
@@ -112,6 +123,9 @@
     TV('hatch', '#ffc400', 3),                                                   // 15
     TV('oni', '#1b1d22', 1, DRIFT),                                              // 16 (DS.CARS)
     TV('sport', '#e4007c', 1, DRIFT),                                            // 17
+    // Tur 2 (yalnız sona eklenir; mevcut sıra/anlam değişmez). Trafikteki ambulansın çakar çubuğu yok:
+    // çubuklu (bar) ambulans yalnız hastane önündeki park aracıdır (missions.js).
+    TV('ambulans', '#f4f6f8', 2, { livery: 'ambulans' }),                         // 18
   ];
 
   // Varyant başına paylaşılan, dondurulmuş, eksiksiz kurulum (asla değiştirme; renk için kopyala)

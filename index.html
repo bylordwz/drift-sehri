@@ -47,8 +47,10 @@
     <div id="w-money">₺0</div>
     <div class="w-bars">
       <div id="w-hp" class="w-bar" aria-label="Sağlık"><i></i></div>
+      <div id="w-armor" class="w-bar armor" aria-label="Zırh" hidden><i></i></div>
       <div id="w-carhp" class="w-bar car" aria-label="Araç hasarı" hidden><i></i></div>
     </div>
+    <div id="w-tags" hidden><span id="w-nitro" class="w-tag nitro" hidden>NİTRO<i></i></span><span id="w-flat" class="w-tag flat" hidden>PATLAK LASTİK</span></div>
     <div id="w-bust" class="w-bar" aria-label="Kelepçe" hidden><i></i></div>
     <div class="w-row"><span id="w-bounty" hidden></span><span id="w-clock">21:00</span></div>
   </div>
@@ -61,6 +63,7 @@
   </div>
   <div id="w-big" class="world-only" aria-live="assertive"><b></b><span></span></div>
   <div id="w-prompt" class="world-only" hidden></div>
+  <div id="w-radio" class="world-only" aria-live="polite"><i class="rd-ico" aria-hidden="true"></i><b></b></div>
 
   <div id="tandem-hud" hidden>
     <div class="t-prog"><i id="t-prog"></i></div>
@@ -102,6 +105,7 @@
     <button id="ctl-enter" class="ctl round" data-ctl="enter" aria-label="Bin / in"><span>BİN</span></button>
     <button id="ctl-act" class="ctl round" data-ctl="act" aria-label="Etkileş"><span>ETKİLEŞ</span></button>
     <button id="ctl-horn" class="ctl round" data-ctl="horn" aria-label="Korna"><span>KORNA</span></button>
+    <button id="ctl-radio" class="ctl" data-ctl="radio" aria-label="Radyo istasyonu değiştir"><span>RADYO</span></button>
     <button id="ctl-map" class="ctl" data-ctl="map" aria-label="Harita">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6 L9 3.5 L15 6 L21 3.5 V18 L15 20.5 L9 18 L3 20.5 Z M9 3.5 V18 M15 6 V20.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
       <span>HARİTA</span>
@@ -130,7 +134,7 @@
       <div class="chip"><span>Araç</span><b id="m-car">HACHI</b></div>
     </div>
     <p class="keys-hint" id="keys-hint">Klavye: ← → direksiyon · ↑ gaz · ↓ fren/geri · Boşluk el freni · Shift debriyaj atma · Q/E vites · C kamera · R kurtar · P duraklat · N ses<br>
-      Açık şehir: WASD/oklar yürü · Shift koş · F bin/in · Boşluk it · E etkileş · H korna · M/Tab harita · X vites</p>
+      Açık şehir: WASD/oklar yürü · Shift koş · F bin/in · Boşluk it · E etkileş · H korna · M/Tab harita · X vites · T/Y radyo</p>
   </div>
 </section>
 
@@ -205,6 +209,7 @@
         <select id="s-fpscap"><option value="0">Sınırsız</option><option value="60">60</option><option value="30">30 (zayıf bilgisayar)</option></select></label>
       <label class="row"><span>Ses</span><input id="s-sound" type="checkbox"></label>
       <label class="row"><span>Ses düzeyi</span><input id="s-vol" type="range" min="0" max="1" step="0.05"></label>
+      <label class="row"><span>Radyo sesi <small>açık şehirde araç radyosu</small></span><input id="s-radiovol" type="range" min="0" max="1" step="0.05"></label>
       <label class="row"><span>FPS göster</span><input id="s-fps" type="checkbox"></label>
     </div>
   </div>
@@ -214,6 +219,7 @@
 <section id="pause" class="screen overlay" hidden>
   <div class="card">
     <h2>Duraklatıldı</h2>
+    <p id="p-pk" class="p-pk world-only"></p>
     <div class="col">
       <button class="mbtn primary" data-act="resume"><b>Devam et</b></button>
       <button class="mbtn world-only" data-act="map"><b>Harita</b><small>Yol noktası koy, yerleri gör</small></button>
@@ -260,6 +266,7 @@
     <button class="lg on" data-f="phones"><i class="lg-ph"></i>Telefon</button>
     <button class="lg on" data-f="places"><i class="lg-pl"></i>Boyahane-Ev</button>
     <button class="lg on" data-f="side"><i class="lg-sd"></i>Etkinlik</button>
+    <button class="lg on" data-f="pickups"><i class="lg-pk"></i>Eşya</button>
   </div>
   <p class="map-hint">Dokun: yol noktası · Çift dokun: yakınlaş · Kaydır: gez</p>
 </section>
@@ -306,6 +313,7 @@
 <script src="js/fx.js"></script>
 <script src="js/actors.js"></script>
 <script src="js/audio.js"></script>
+<script src="js/radio.js"></script>
 <script src="js/input.js"></script>
 <script src="js/score.js"></script>
 <script src="js/tandem.js"></script>
@@ -313,6 +321,7 @@
 <script src="js/peds.js"></script>
 <script src="js/police.js"></script>
 <script src="js/missions.js"></script>
+<script src="js/pickups.js"></script>
 <script src="js/world.js"></script>
 <script src="js/hud.js"></script>
 <script src="js/ui.js"></script>

@@ -110,7 +110,7 @@
     load() {
       const base = {
         v: 1, money: 5000, best: 0, total: 0, owned: ['hachi'], car: 'hachi', cars: {}, hint: false,
-        settings: { steer: 'buttons', sens: 0.6, assist: 0.7, trans: 'auto', cam: 'chase', zoom: 1, time: 'night', weather: 'clear', quality: 'auto', qv: 2, dynres: true, fpsCap: 0, sound: true, vol: 0.8, fps: false, wcam: 'north', wtime: 'cycle' },
+        settings: { steer: 'buttons', sens: 0.6, assist: 0.7, trans: 'auto', cam: 'chase', zoom: 1, time: 'night', weather: 'clear', quality: 'auto', qv: 2, dynres: true, fpsCap: 0, sound: true, vol: 0.8, fps: false, wcam: 'north', wtime: 'cycle', radioVol: 0.6 },
         ow: DS.World ? DS.World.defaultSave() : {},
       };
       const d = U.store.get(SAVE_KEY, null);
@@ -174,6 +174,9 @@
       b.toggle('steer-slider', s.steer === 'slider');
       b.toggle('steer-tilt', s.steer === 'tilt');
       this.audio.setOn(s.sound); this.audio.setVol(s.vol);
+      // araç radyosu (açık şehir; dünya kurulmadıysa begin() uygular)
+      const rd = this.world && this.world.radio;
+      if (rd && rd.setVolume) { try { rd.setVolume(typeof s.radioVol === 'number' ? s.radioVol : 0.6); } catch (e) { console.error(e); } }
       if (this.inWorld()) this.world.applyEnv(true);
       else {
         const e = Object.assign({}, ENV[s.time] || ENV.night);

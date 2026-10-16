@@ -5,9 +5,9 @@
 (function () {
   const DS = window.DS, U = DS.U;
   const HOLD = { left: 1, right: 1, gas: 1, brake: 1, hand: 1, attack: 1, horn: 1 };
-  const EDGE = { gup: 1, gdn: 1, enter: 1, act: 1, map: 1 };
+  const EDGE = { gup: 1, gdn: 1, enter: 1, act: 1, map: 1, radio: 1 };
   // dokunmatikte basınca titreşimli geri bildirim alan yeni düğmeler
-  const BUZZ = { enter: 1, act: 1, map: 1, attack: 1, horn: 1 };
+  const BUZZ = { enter: 1, act: 1, map: 1, attack: 1, horn: 1, radio: 1 };
   const KEYMAP = {
     ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right',
     ArrowUp: 'gas', KeyW: 'gas', ArrowDown: 'brake', KeyS: 'brake',
@@ -18,8 +18,8 @@
     KeyR: 'reset', KeyP: 'pause', Escape: 'pause', KeyC: 'cam', KeyM: 'mute', KeyN: 'mute',
     KeyF: 'enter', Enter: 'enter', NumpadEnter: 'enter',
   };
-  // açık şehirde anlamı değişen tuşlar
-  const KEYEDGE_W = { KeyE: 'act', KeyM: 'map', Tab: 'map' };
+  // açık şehirde anlamı değişen tuşlar (T: radyo sonraki istasyon, Y: önceki; Shift debriyaja ait olduğu için kullanılmaz)
+  const KEYEDGE_W = { KeyE: 'act', KeyM: 'map', Tab: 'map', KeyT: 'radio', KeyY: 'radioPrev' };
   // yüzen joystick: yarıçap (css px), ölü bölge, koşma eşiği, ana yön yakalama açısı
   const STICK_R = 56, STICK_DEAD = 0.12, STICK_RUN = 0.6, STICK_SNAP = (8 * Math.PI) / 180;
   const PAD_DEAD = 0.15;
@@ -366,6 +366,8 @@
         const ed = (i, name) => { const p = b(i) > 0.5; if (p && !this.padPrev[i] && name) this.edges[name] = true; this.padPrev[i] = p; };
         if (this.world) {
           ed(5, 'gup'); ed(4, 'gdn'); ed(2, foot ? 'act' : 'kick'); ed(3, 'enter'); ed(9, 'pause'); ed(11, 'cam'); ed(12, 'act');
+          // yön tuşu sağ (15): araçta radyo istasyonu
+          ed(15, foot ? null : 'radio');
           // Geri (8): kısa dokunuş = harita, 1 s basılı = kurtar
           const bk = b(8) > 0.5;
           if (bk) {

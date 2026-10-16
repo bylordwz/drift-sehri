@@ -1115,6 +1115,7 @@
       this.x = 0; this.y = 0; this.h = 0;
       this.vx = 0; this.vy = 0; this.speed = 0; this.run = false; this.phase = 0;
       this.hp = 100;
+      this.armor = 0;            // zırh 0..100 (eşya): hasarın 2/3'ünü emer
       this.state = 'walk';
       this.t = 0;
       this.hurtT = 99;           // son hasardan beri geçen süre (yenilenme 8 s sonra)
@@ -1301,9 +1302,16 @@
       return P.knock(best, ix, iy, 'walker', PUNCH_V) ? best : -1;
     }
 
-    // hasar: hp düşer, 1.2 s yerde, itme hızı (ix, iy)
+    // hasar: hp düşer (zırh varsa 2/3'ünü zırh emer), 1.2 s yerde, itme hızı (ix, iy)
     hurt(amount, ix, iy) {
       if (!(amount > 0)) return;
+      const a = this.armor > 0 ? this.armor : 0;
+      if (a > 0) {
+        const ab = Math.min(a, amount * (2 / 3));
+        this.armor = a - ab;
+        if (this.armor < 0.01) this.armor = 0;
+        amount -= ab;
+      }
       this.hp = Math.max(0, this.hp - amount);
       this.hurtT = 0;
       const s = this.state;

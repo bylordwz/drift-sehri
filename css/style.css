@@ -359,6 +359,14 @@ body.world #msgs { top: calc(40% + var(--sat)); }
 .w-bar.car i { background: var(--cyan); }
 .w-bar.car.mid i { background: var(--sodium); }
 .w-bar.car.low i { background: #ff6a3d; }
+/* tur 2: zırh çubuğu (sağlığın altında), nitro / patlak lastik etiketleri */
+.w-bar.armor { height: 5px; border-color: rgba(79, 155, 255, 0.45); }
+.w-bar.armor i { background: #4f9bff; }
+#w-tags { display: flex; gap: 4px; justify-content: flex-end; }
+.w-tag { position: relative; isolation: isolate; overflow: hidden; padding: 0 6px; font-size: 10px; font-weight: 700; line-height: 15px; letter-spacing: 0.06em; text-shadow: none; white-space: nowrap; }
+.w-tag.nitro { color: #06222b; background: rgba(56, 217, 255, 0.3); border: 1px solid rgba(56, 217, 255, 0.7); }
+.w-tag.nitro i { position: absolute; left: 0; top: 0; bottom: 0; width: 100%; z-index: -1; transform-origin: left; background: var(--cyan); }
+.w-tag.flat { color: #fff; background: rgba(214, 74, 34, 0.9); border: 1px solid rgba(255, 160, 120, 0.7); }
 /* kelepçe (tutuklanma) çubuğu: etiket çubuğun solunda */
 #w-bust { width: 84px; height: 8px; overflow: visible; border-color: rgba(158, 193, 255, 0.5); }
 #w-bust::before {
@@ -407,6 +415,18 @@ body.world #msgs { top: calc(40% + var(--sat)); }
   padding: 5px 12px; background: rgba(10, 13, 20, 0.72); border: 1px solid var(--line); font-weight: 700; font-size: 14px; letter-spacing: 0.03em; white-space: nowrap;
 }
 
+/* radyo istasyonu açılır yazısı (2 s, üst orta); simge CSS ile çizilir (emoji yok) */
+#w-radio {
+  position: absolute; left: 50%; top: calc(12px + var(--sat)); transform: translate(-50%, -6px); display: flex; align-items: center; gap: 8px;
+  max-width: 150px; padding: 5px 11px; background: rgba(10, 13, 20, 0.78); border: 1px solid rgba(255, 178, 62, 0.5);
+  opacity: 0; transition: opacity 0.2s ease, transform 0.2s ease; pointer-events: none; white-space: nowrap;
+}
+#w-radio.on { opacity: 1; transform: translate(-50%, 0); }
+#w-radio b { font-family: var(--f-display); font-weight: 400; font-size: 13px; color: var(--sodium); overflow: hidden; text-overflow: ellipsis; }
+.rd-ico { position: relative; flex: none; width: 16px; height: 11px; margin-top: 4px; border: 2px solid var(--chalk); border-radius: 2px; }
+.rd-ico::before { content: ''; position: absolute; left: 1px; bottom: 100%; width: 2px; height: 8px; background: var(--chalk); transform: rotate(-35deg); transform-origin: bottom center; }
+.rd-ico::after { content: ''; position: absolute; right: 1px; top: 1px; width: 5px; height: 5px; border-radius: 50%; background: var(--sodium); }
+
 /* yeni mesaj türleri ('bad' açık şehirde kullanılmaz) */
 .msg.mis b { color: var(--sodium); }
 .msg.cop b { color: #9ec1ff; }
@@ -432,11 +452,12 @@ body.touch.world.onfoot .pad-left, body.touch.world.onfoot .pad-right, body.touc
 .ctl.round span { font-size: 15px; }
 #foot-pad .ctl[data-ctl='attack'] { width: 72px; height: 72px; right: calc(24px + var(--sar)); bottom: calc(40px + var(--sab)); background: rgba(255, 178, 62, 0.25); }
 #foot-pad .ctl[data-ctl='attack'] span { font-size: 18px; }
-#ctl-enter, #ctl-act, #ctl-horn, #ctl-map { display: none; }
+#ctl-enter, #ctl-act, #ctl-horn, #ctl-map, #ctl-radio { display: none; }
 body.touch.world.near-car #ctl-enter, body.touch.world:not(.onfoot) #ctl-enter { display: grid; }
 body.touch.world.can-act #ctl-act { display: grid; }
 body.touch.world:not(.onfoot) #ctl-horn { display: grid; }
 body.touch.world #ctl-map { display: grid; }
+body.touch.world:not(.onfoot) #ctl-radio { display: grid; }
 #ctl-enter { width: 64px; height: 64px; right: calc(14px + var(--sar)); bottom: calc(220px + var(--sab)); background: rgba(95, 224, 176, 0.28); border-color: rgba(95, 224, 176, 0.6); }
 #ctl-act { width: 56px; height: 56px; right: calc(90px + var(--sar)); bottom: calc(224px + var(--sab)); background: rgba(56, 217, 255, 0.24); border-color: rgba(56, 217, 255, 0.6); }
 #ctl-act span { font-size: 9.5px; letter-spacing: 0; }
@@ -445,6 +466,9 @@ body.touch.world #ctl-map { display: grid; }
 #ctl-map { width: 44px; height: 44px; right: calc(132px + var(--sar)); top: calc(62px + var(--sat)); border-radius: 6px; grid-template-rows: 1fr auto; padding: 4px 0 3px; }
 #ctl-map svg { width: 20px; height: 20px; }
 #ctl-map span { font-size: 7.5px; letter-spacing: 0; }
+/* radyo (araçta): direksiyon kümesiyle devir saati arasında; dikeyde vites düğmelerinin sağında, saatin üstünde */
+#ctl-radio { width: 72px; height: 44px; left: calc(252px + var(--sal)); bottom: calc(20px + var(--sab)); border-radius: 8px; background: rgba(255, 178, 62, 0.16); border-color: rgba(255, 178, 62, 0.5); }
+#ctl-radio span { font-size: 11px; letter-spacing: 0.02em; }
 /* açık şehirde manuel vites düğmeleri sola (sağ küme BİN/KORNA ile çakışmasın) */
 body.world .pad-gears { right: auto; left: calc(14px + var(--sal)); bottom: calc(124px + var(--sab)); }
 
@@ -472,6 +496,7 @@ body.world .pad-gears { right: auto; left: calc(14px + var(--sal)); bottom: calc
 .lg-ph { background: var(--cyan); }
 .lg-pl { background: #c86bff; }
 .lg-sd { background: #ff4fd8; }
+.lg-pk { background: #ff4f6a; }
 .map-hint { position: absolute; right: calc(14px + var(--sar)); bottom: calc(18px + var(--sab)); margin: 0; font-size: 12px; color: var(--mute); text-shadow: 1px 1px 0 #000; pointer-events: none; }
 
 /* ---------- telefon ---------- */
@@ -525,6 +550,9 @@ body.world .pad-gears { right: auto; left: calc(14px + var(--sal)); bottom: calc
   #w-big { top: calc(34% + var(--sat)); }
   body.world #toast { bottom: calc(340px + var(--sab)); }
   body.world .pad-gears { bottom: calc(200px + var(--sab)); }
+  #ctl-radio { left: calc(106px + var(--sal)); bottom: calc(200px + var(--sab)); }
+  #w-radio { left: calc(12px + var(--sal)); top: calc(112px + var(--sat)); transform: translateY(-6px); }
+  #w-radio.on { transform: none; }
   #map-legend .lg { padding: 6px 9px; font-size: 12px; }
   .map-hint { display: none; }
 }
@@ -542,5 +570,9 @@ body.world .pad-gears { right: auto; left: calc(14px + var(--sal)); bottom: calc
   #w-big.on.a, #w-big.on.b, #w-money.p1, #w-money.p2 { animation: none; }
   #w-stars.flash i.on { animation-duration: 1.2s; }
 }
+/* duraklatma kartı: gizli paket sayacı */
+.p-pk { margin: -6px 0 0; font-size: 13px; font-weight: 600; color: var(--mute); font-variant-numeric: tabular-nums; }
+.p-pk:empty { display: none; }
+@media (prefers-reduced-motion: reduce) { #w-radio { transition: none; } }
 /* düşük kademelerde yeni kaplamalar da bulanıklıksız */
 body.q0 #phone.overlay, body.q1 #phone.overlay, body.q0 #mresult.overlay, body.q1 #mresult.overlay { backdrop-filter: none; background: rgba(6, 8, 13, 0.86); }

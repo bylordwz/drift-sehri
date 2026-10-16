@@ -49,9 +49,14 @@
   bk(8, '#5fe0b0', 1, 3, '');             // kendi araç
   bk(9, '#ffd23e', 1, 3.5, 'missions');   // görev aracı
   bk(10, '#ffd23e', 0, 4, 'missions');    // sonraki kontrol noktası
+  // tur 2: eşyalar (DS.Pickups; gizli paketler blip almaz)
+  bk(11, '#ff4f6a', 0, 2.5, 'pickups');   // can
+  bk(12, '#4f9bff', 0, 2.5, 'pickups');   // zırh
+  bk(13, '#ffd23e', 2, 3, 'pickups');     // rüşvet rozeti
+  bk(14, '#5fe08a', 0, 2.5, 'pickups');   // tamir, nitro, para, kefalet kartı
   const BK_DEF = { col: '#d6dde6', sh: 0, r: 3, f: '' };
   // önem sırası (kısıtta önce bunlar); çizim ters sırada (önemli olan üstte)
-  const PRIO = [1, 10, 7, 9, 2, 8, 5, 4, 3, 6];
+  const PRIO = [1, 10, 7, 9, 2, 8, 5, 4, 3, 6, 11, 12, 13, 14];
   const PIN = []; PIN[1] = 1; PIN[7] = 1; PIN[10] = 1;
   const POLICE_B = '#2a6bff';
   const CASE = 'rgba(8,10,16,0.9)';
@@ -66,6 +71,8 @@
       const e = (this.el = {
         right: q('#w-right'), stars: q('#w-stars'), bust: q('#w-bust'), bustI: q('#w-bust > i'),
         money: q('#w-money'), hp: q('#w-hp'), hpI: q('#w-hp > i'), carhp: q('#w-carhp'), carhpI: q('#w-carhp > i'),
+        armor: q('#w-armor'), armorI: q('#w-armor > i'), tags: q('#w-tags'), nitro: q('#w-nitro'), nitroI: q('#w-nitro > i'),
+        flat: q('#w-flat'), radio: q('#w-radio'), radioB: q('#w-radio > b'),
         bounty: q('#w-bounty'), clock: q('#w-clock'),
         obj: q('#w-obj'), objT: q('#w-obj-t'), objS: q('#w-obj-s'), timer: q('#w-timer'),
         big: q('#w-big'), zone: q('#w-zone'), prompt: q('#w-prompt'),
@@ -94,7 +101,7 @@
       this._bigQ = []; this._bigT = 0; this._bigFlip = false;
       this._money = null; this._st = -1; this._tsec = -2; this._pop = false;
       this._t = 0;
-      this.filt = { missions: true, phones: true, places: true, side: true };
+      this.filt = { missions: true, phones: true, places: true, side: true, pickups: true };
       this.mv = { cx: 0, cy: 0, z: 1.6, fit: 1 };
       this._ptrs = [];
       this._padPrev = [];
@@ -116,6 +123,7 @@
       const e = this.el;
       setC(e.big, 'on', false);
       setC(e.zone, 'on', false);
+      if (e.radio) setC(e.radio, 'on', false);
       this._money = null; this._st = -1; this._tsec = -2; this._bo = -1;
       this._tt = 1;
       if (this._wpTimer) { clearTimeout(this._wpTimer); this._wpTimer = 0; }
@@ -174,6 +182,22 @@
       const hp = U.clamp(h.hp || 0, 0, 100);
       setX(e.hpI, hp / 100);
       setC(e.hp, 'low', hp < 30);
+      // zırh (sağlığın altında; yoksa gizli), nitro süresi ve patlak lastik etiketleri
+      const ar = U.clamp(h.armor || 0, 0, 100);
+      if (e.armor) { setH(e.armor, ar <= 0); if (ar > 0) setX(e.armorI, ar / 100); }
+      const nt = h.nitro > 0 ? h.nitro : 0, fl = !!h.flat;
+      if (e.tags) {
+        setH(e.tags, !(nt > 0 || fl));
+        setH(e.nitro, !(nt > 0));
+        if (nt > 0 && e.nitroI) setX(e.nitroI, nt);
+        setH(e.flat, !fl);
+      }
+      // radyo istasyonu (değişince / araca binince 2 s)
+      if (e.radio) {
+        const ron = h.radioT > 0 && !!h.radio && !!h.inCar;
+        if (ron) setT(e.radioB, h.radio);
+        setC(e.radio, 'on', ron);
+      }
       // araç hasarı
       const ch = h.carHp;
       const noCar = !(ch >= 0);

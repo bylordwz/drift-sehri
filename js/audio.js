@@ -1,7 +1,8 @@
 'use strict';
 // WebAudio ile sentezlenen sesler: motor, turbo, lastik, rüzgâr, çarpışma, egzoz patlaması
 // Açık şehir (SPEC §2.6.10): siren, korna (oyuncu + NPC), ayak sesi, yumruk, para, kapı, patlama, jingle'lar,
-// oyuncu motor ses çarpanı. Tüm yeni yöntemler init()'ten önce de güvenle çağrılabilir (sessizce yok sayılır).
+// oyuncu motor ses çarpanı; tur 2: polis helikopteri pervanesi (setRotor). Tüm yeni yöntemler init()'ten önce de
+// güvenle çağrılabilir (sessizce yok sayılır).
 (function () {
   const DS = window.DS, U = DS.U;
 
@@ -29,6 +30,8 @@
       // açık şehir: motor ses çarpanı (yayayken 0), siren / korna durumu, NPC korna yuvaları
       this.engVol = 1; this.sirenVol = 0; this.siren = null; this._sirTok = 0;
       this.hornOn = false; this.hornV = null; this._hornTok = 0; this._hnEnd = [0, 0];
+      // tur 2: polis helikopteri pervane sesi (tek paylaşılan ses)
+      this.rotorVol = 0; this.rotor = null; this._rotTok = 0;
     }
 
     init() {
@@ -144,6 +147,9 @@
       this.sirenVol = 0; this.hornOn = false;
       if (this.siren) { this.siren.g.gain.cancelScheduledValues(t); this.siren.g.gain.setTargetAtTime(0, t, 0.03); this._dropLater('siren'); }
       if (this.hornV) { this.hornV.g.gain.cancelScheduledValues(t); this.hornV.g.gain.setTargetAtTime(0, t, 0.02); this._dropLater('horn'); }
+      // pervane sesi de susar (bir sonraki setRotor çağrısı yeniden açar)
+      this.rotorVol = 0;
+      if (this.rotor) { this.rotor.g.gain.cancelScheduledValues(t); this.rotor.g.gain.setTargetAtTime(0, t, 0.05); this._dropRotorLater(); }
     }
 
     engineParams(e, rpm, thr, redline, vol) {
@@ -337,6 +343,56 @@
         for (let i = 0; i < v.nodes.length; i++) { try { v.nodes[i].stop(); } catch (err) { /* yok */ } }
         try { v.out.disconnect(); } catch (err) { /* yok */ }
         if (which === 'siren') { this.siren = null; delete this._last.sir; } else this.hornV = null;
+      }, 1500);
+    }
+
+    // Polis helikopteri pervanesi (tek paylaşılan ses): alçak geçiren gürültü ~11 Hz testere dişiyle genlik
+    // kiplenir (keskin vuruş, yavaş sönüm: "pat-pat") + aynı ritimde alçak 52 Hz gümleme. vol 0 = kapalı.
+    // Her kare çağrılabilir (değer yalnız anlamlı değişince gönderilir); init() öncesi yalnız durum saklanır.
+    setRotor(vol) {
+      vol = vol > 0 ? Math.min(1, vol) : 0;
+      this.rotorVol = vol;
+      if (!this.ready) return;
+      if (vol > 0) {
+        if (!this.rotor) this._mkRotor();
+        if (this._rotTok) { clearTimeout(this._rotTok); this._rotTok = 0; }
+      }
+      if (!this.rotor) return;
+      this.st(this.rotor.g.gain, vol * 0.24, 0.08, 'rot');
+      if (vol === 0) this._dropRotorLater();
+    }
+    _mkRotor() {
+      const c = this.ctx, t = c.currentTime;
+      const g = c.createGain(); g.gain.value = 0;
+      const src = c.createBufferSource(); src.buffer = this.noise; src.loop = true; src.playbackRate.value = 0.7;
+      const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 420; lp.Q.value = 0.9;
+      const am = c.createGain(); am.gain.value = 0.5;
+      // testere dişi LFO (−0.45 ölçek): kazanç 0.95'ten 0.05'e iner, sonra birden 0.95'e sıçrar
+      const lfo = c.createOscillator(); lfo.type = 'sawtooth'; lfo.frequency.value = 11;
+      const lg = c.createGain(); lg.gain.value = -0.45;
+      lfo.connect(lg); lg.connect(am.gain);
+      src.connect(lp); lp.connect(am); am.connect(g);
+      // alçak gümleme: 52 Hz sinüs, aynı ritimde 0..0.5 kazanç
+      const th = c.createOscillator(); th.type = 'sine'; th.frequency.value = 52;
+      const tg = c.createGain(); tg.gain.value = 0.25;
+      const lg2 = c.createGain(); lg2.gain.value = -0.25;
+      lfo.connect(lg2); lg2.connect(tg.gain);
+      th.connect(tg); tg.connect(g);
+      g.connect(this.master);
+      src.start(t); lfo.start(t); th.start(t);
+      this.rotor = { g, nodes: [src, lfo, th], out: g };
+      delete this._last.rot;
+    }
+    // kapalı kalan pervane düğümlerini bir süre sonra durdur (boşta kaynak çalışmasın)
+    _dropRotorLater() {
+      if (this._rotTok) return;
+      this._rotTok = setTimeout(() => {
+        this._rotTok = 0;
+        const v = this.rotor;
+        if (!v || this.rotorVol > 0) return;
+        for (let i = 0; i < v.nodes.length; i++) { try { v.nodes[i].stop(); } catch (err) { /* yok */ } }
+        try { v.out.disconnect(); } catch (err) { /* yok */ }
+        this.rotor = null; delete this._last.rot;
       }, 1500);
     }
 

@@ -16,6 +16,8 @@
       // açık şehir bütçeleri (SPEC §4.1)
       traffic: 12, peds: 16, physCars: 4, copMax: 3, footCops: 2, aiHz: 8, carLights: 2, prerot: true, actorBudgetMs: 2,
       spriteMB: 14, pedFrames: 4, pedAngles: 16, carVariants: 8, pedPalettes: 8, npcFx: false, blips: 6, zoomMin: 0.7, chevrons: false, dmgSmoke: 2,
+      // tur 2: polis helikopteri, eşya parlaması (ışık haritası), radyo ses sayısı
+      heli: true, pickupsGlow: false, radioVoices: 6,
     },
     {
       name: 'Düşük', dprCap: 1, scales: [0.6, 0.72, 0.85], maxPx: 1.0e6,
@@ -25,6 +27,7 @@
       dtMax: 1 / 20, physCap: 6, gaugeHz: 30, miniHz: 15, textHz: 20, hudDpr: 1, audioHz: 30, oversample: '2x',
       traffic: 16, peds: 22, physCars: 5, copMax: 4, footCops: 3, aiHz: 10, carLights: 4, prerot: true, actorBudgetMs: 2,
       spriteMB: 20, pedFrames: 4, pedAngles: 32, carVariants: 12, pedPalettes: 10, npcFx: false, blips: 8, zoomMin: 0.64, chevrons: true, dmgSmoke: 4,
+      heli: true, pickupsGlow: true, radioVoices: 8,
     },
     {
       name: 'Orta', dprCap: 1.5, scales: [0.75, 0.87, 1.0], maxPx: 2.1e6,
@@ -33,7 +36,8 @@
       sparks: 220, debris: 160, skidRes: 8, skidMax: 40, flood: 52, rainLines: 130, splashRate: 60, splashCap: 250,
       dtMax: 1 / 20, physCap: 6, gaugeHz: 30, miniHz: 30, textHz: 30, hudDpr: 1.5, audioHz: 30, oversample: '2x',
       traffic: 22, peds: 32, physCars: 7, copMax: 5, footCops: 4, aiHz: 15, carLights: 6, prerot: false, actorBudgetMs: 1.5,
-      spriteMB: 32, pedFrames: 8, pedAngles: 32, carVariants: 18, pedPalettes: 14, npcFx: true, blips: 12, zoomMin: 0.58, chevrons: true, dmgSmoke: 6,
+      spriteMB: 32, pedFrames: 8, pedAngles: 32, carVariants: 19, pedPalettes: 14, npcFx: true, blips: 12, zoomMin: 0.58, chevrons: true, dmgSmoke: 6,
+      heli: true, pickupsGlow: true, radioVoices: 10,
     },
     {
       name: 'Yüksek', dprCap: 2, scales: [0.9, 1.0], maxPx: 4.2e6,
@@ -42,7 +46,8 @@
       sparks: 320, debris: 220, skidRes: 8, skidMax: 56, flood: 52, rainLines: 200, splashRate: 90, splashCap: 400,
       dtMax: 1 / 20, physCap: 6, gaugeHz: 60, miniHz: 30, textHz: 60, hudDpr: 2, audioHz: 60, oversample: '2x',
       traffic: 30, peds: 44, physCars: 9, copMax: 6, footCops: 4, aiHz: 20, carLights: 10, prerot: false, actorBudgetMs: 1.5,
-      spriteMB: 48, pedFrames: 8, pedAngles: 32, carVariants: 18, pedPalettes: 16, npcFx: true, blips: 16, zoomMin: 0.55, chevrons: true, dmgSmoke: 8,
+      spriteMB: 48, pedFrames: 8, pedAngles: 32, carVariants: 19, pedPalettes: 16, npcFx: true, blips: 16, zoomMin: 0.55, chevrons: true, dmgSmoke: 8,
+      heli: true, pickupsGlow: true, radioVoices: 12,
     },
   ];
 

@@ -94,6 +94,18 @@
       if (id === 'garage') { this.buildGarage(); setTimeout(() => this.sizeCanvases(), 0); }
       if (id === 'settings') this.loadSettings();
       if (id === 'menu') this.updateMenu();
+      if (id === 'pause') this._pauseInfo();
+    },
+    // duraklatma kartı: açık şehirde gizli paket sayacı (DS.Pickups.count() paylaşılan nesne: yalnız okunur)
+    _pauseInfo() {
+      const el = $('#p-pk');
+      if (!el) return;
+      const g = this.g, W = g.mode === 'world' && g.world ? g.world : null, pk = W && W.pickups;
+      let txt = '';
+      if (pk && pk.count) {
+        try { const c = pk.count(); if (c && c.total > 0) txt = 'Gizli paket: ' + (c.packages | 0) + '/' + (c.total | 0); } catch (e) { txt = ''; }
+      }
+      el.textContent = txt;
     },
     hideAll() { for (const k in this.screens) this.screens[k].hidden = true; this.current = null; },
 
@@ -178,7 +190,7 @@
       on('#s-trans', 'trans'); on('#s-cam', 'cam'); on('#s-zoom', 'zoom', Number);
       on('#s-time', 'time'); on('#s-weather', 'weather'); on('#s-quality', 'quality', (v) => (v === 'auto' ? 'auto' : Number(v)));
       on('#s-dynres', 'dynres'); on('#s-fpscap', 'fpsCap', Number);
-      on('#s-sound', 'sound'); on('#s-vol', 'vol', Number); on('#s-fps', 'fps');
+      on('#s-sound', 'sound'); on('#s-vol', 'vol', Number); on('#s-fps', 'fps'); on('#s-radiovol', 'radioVol', Number);
       on('#s-wcam', 'wcam'); on('#s-wtime', 'wtime');
     },
     loadSettings() {
@@ -188,6 +200,8 @@
       $('#s-time').value = s.time; $('#s-weather').value = s.weather; $('#s-quality').value = String(s.quality);
       $('#s-dynres').checked = !!s.dynres; $('#s-fpscap').value = String(s.fpsCap || 0);
       $('#s-sound').checked = s.sound; $('#s-vol').value = s.vol; $('#s-fps').checked = s.fps;
+      const rv = $('#s-radiovol');
+      if (rv) rv.value = typeof s.radioVol === 'number' ? s.radioVol : 0.6;
       const wc = $('#s-wcam'), wt = $('#s-wtime');
       if (wc) wc.value = s.wcam === 'chase' ? 'chase' : 'north';
       if (wt) wt.value = s.wtime || 'cycle';
